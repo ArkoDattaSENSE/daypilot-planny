@@ -411,6 +411,43 @@ button.active,
   background: #eef2ff;
 }
 
+.setup-alert,
+.setup-hint,
+.copy-line {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 14px;
+  background: #eef2ff;
+}
+
+.setup-alert {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.setup-alert span,
+.setup-hint span {
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+
+.copy-line {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  margin: 8px 0 0;
+  background: #f8fafc;
+  border-color: var(--line);
+}
+
+.copy-line code,
+.setup-hint code {
+  overflow-wrap: anywhere;
+}
+
 .planner-head {
   display: flex;
   justify-content: space-between;

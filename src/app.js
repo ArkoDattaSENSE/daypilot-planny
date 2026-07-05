@@ -2,7 +2,7 @@ import { initFirebase, saveCloudState, loadCloudState, signIn, signOut } from ".
 import {
   getCalendarClientId, setCalendarClientId, clearCalendarToken, hasValidToken,
   requestCalendarToken, ensurePlannyCalendar, insertEvent, patchEvent, deleteEvent,
-  listEvents, eventToActivityFields
+  listEvents, eventToActivityFields, findInstance
 } from "./gcal.js";
 
 const storageKey = "daypilot-state-v2";
@@ -20,7 +20,10 @@ const blankState = {
   settings: {
     parserMode: "manual",
     workDone: 0,
-    exhaustion: 20
+    exhaustion: 20,
+    checkinEnabled: false,
+    checkinTime: "21:00",
+    checkinText: ""
   },
   profile: {
     workStart: "",
@@ -48,11 +51,13 @@ const blankState = {
   pendingParse: null,
   chatClarify: null,
   questionnaireReturn: null,
+  pendingRecurringEdit: null,
   lastMessage: "Blank slate ready. Add a task or dump into chat."
 };
 
 let state = loadState();
 let firebaseRuntime = null;
+let authNotice = "";
 
 boot();
 
@@ -79,6 +84,7 @@ async function boot() {
   if (calendarReady() && hasValidToken()) {
     syncCalendarNow(false);
   }
+  scheduleCheckinLoop();
 }
 
 function loadState() {
@@ -102,6 +108,9 @@ function normalizeState(input) {
   next.settings.parserMode = next.settings.parserMode === "gemini" ? "gemini" : "manual";
   next.settings.workDone = clampNumber(next.settings.workDone, 0, 100, 0);
   next.settings.exhaustion = clampNumber(next.settings.exhaustion, 0, 100, 20);
+  next.settings.checkinEnabled = Boolean(next.settings.checkinEnabled);
+  next.settings.checkinTime = sanitizeTime(next.settings.checkinTime, "21:00");
+  next.settings.checkinText = String(next.settings.checkinText || "").slice(0, 120);
   next.profile = sanitizeProfile({ ...base.profile, ...(input && input.profile ? input.profile : {}) });
   next.activities = (Array.isArray(next.activities) ? next.activities : []).map(sanitizeActivity).filter(Boolean);
   next.projectNotes = (Array.isArray(next.projectNotes) ? next.projectNotes : []).map(sanitizeNote).filter(Boolean);
@@ -118,6 +127,18 @@ function normalizeState(input) {
   next.pendingParse = null;
   next.chatClarify = null;
   next.questionnaireReturn = null;
+  next.pendingRecurringEdit = null;
+  const checkinsInput = next.checkins && typeof next.checkins === "object" ? next.checkins : {};
+  next.checkins = {};
+  Object.keys(checkinsInput).slice(0, 400).forEach((key) => {
+    const entry = checkinsInput[key];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(key) && entry && typeof entry === "object") {
+      next.checkins[key] = {
+        reminders: clampNumber(entry.reminders, 0, 3, 0),
+        done: Boolean(entry.done)
+      };
+    }
+  });
   next.activeModal = ["chat", "task", "questionnaire"].includes(next.activeModal) ? next.activeModal : null;
   if (next.editingId && !next.activities.some((activity) => activity.id === next.editingId)) {
     next.editingId = null;
@@ -199,9 +220,12 @@ function sanitizeActivity(item) {
     recurrence: normalizeRecurrence(item.recurrence),
     note: String(item.note || "").slice(0, 2000),
     status: sanitizeStatus(item.status),
+    notify: item.notify !== false,
+    notifyMin: clampNumber(item.notifyMin, 0, 120, 10),
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
     gcalEventId: typeof item.gcalEventId === "string" && item.gcalEventId ? item.gcalEventId : undefined,
-    gcalSyncedAt: typeof item.gcalSyncedAt === "string" && item.gcalSyncedAt ? item.gcalSyncedAt : undefined
+    gcalSyncedAt: typeof item.gcalSyncedAt === "string" && item.gcalSyncedAt ? item.gcalSyncedAt : undefined,
+    gcalInstanceOf: typeof item.gcalInstanceOf === "string" && item.gcalInstanceOf ? item.gcalInstanceOf : undefined
   };
 }
 
@@ -277,6 +301,18 @@ window.addEventListener("popstate", render);
 
 function render() {
   state.route = routeName();
+  if (state.route === "stats" && state.settings.checkinEnabled) {
+    const record = state.checkins[todayKey()];
+    if (record && !record.done) {
+      const parts = state.settings.checkinTime.split(":").map(Number);
+      const base = new Date();
+      base.setHours(parts[0], parts[1], 0, 0);
+      if (record.reminders > 0 || Date.now() >= base.getTime()) {
+        record.done = true;
+        saveLocal();
+      }
+    }
+  }
   document.querySelector("#app").innerHTML = `
     <main class="app">
       ${renderHeader()}
@@ -581,6 +617,11 @@ function renderStatsPage() {
 function renderSettingsPage() {
   const firebaseConfig = localStorage.getItem(firebaseKey) || "";
   const token = localStorage.getItem(geminiKey) || "";
+  const savedConfig = readFirebaseConfig();
+  const projectId = savedConfig && savedConfig.projectId ? savedConfig.projectId : "";
+  const authSettingsUrl = firebaseConsoleUrl(projectId, "authentication/settings");
+  const authProvidersUrl = firebaseConsoleUrl(projectId, "authentication/providers");
+  const firestoreUrl = firebaseConsoleUrl(projectId, "firestore/databases");
   return `
     <section class="settings-page">
       <div class="page-head">
@@ -593,12 +634,26 @@ function renderSettingsPage() {
             <h3>Firebase sync</h3>
             <p class="muted">Use this for cloud sync, account backup, and settings sync.</p>
           </div>
-          <a class="external-link" href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">Open Firebase Console</a>
+          <a class="external-link" href="${authSettingsUrl}" target="_blank" rel="noreferrer">Open Firebase Console</a>
         </div>
+        ${authNotice ? `
+          <div class="setup-alert">
+            <strong>Google sign-in needs one Firebase console fix.</strong>
+            <span>${escapeHtml(authNotice)}</span>
+            <div class="button-row">
+              <a class="external-link" href="${authSettingsUrl}" target="_blank" rel="noreferrer">Open authorized domains</a>
+              <button data-action="copy-auth-domain">Copy domain</button>
+            </div>
+          </div>
+        ` : ""}
         <ol class="setup-steps">
           <li>
             <strong>Create or open your own Firebase project.</strong>
             <span>Click Add project if you do not have one. Keep it on the free Spark plan. Every user brings their own project - this app ships with no shared backend, so your data lives only in your project.</span>
+          </li>
+          <li>
+            <strong>Enable Google sign-in.</strong>
+            <span>Open <a href="${authProvidersUrl}" target="_blank" rel="noreferrer">Authentication -> Sign-in method</a>, click Google, enable it, and save.</span>
           </li>
           <li>
             <strong>Create a Web App.</strong>
@@ -609,10 +664,25 @@ function renderSettingsPage() {
             <span>Firebase shows code containing <code>const firebaseConfig = {...}</code>. Copy only the JSON-like object inside the braces.</span>
           </li>
           <li>
+            <strong>Authorize this website for sign-in.</strong>
+            <span>Open <a href="${authSettingsUrl}" target="_blank" rel="noreferrer">Authentication -> Settings -> Authorized domains</a>, click Add domain, and add exactly:</span>
+            <span class="copy-line"><code>${escapeHtml(location.hostname)}</code><button data-action="copy-auth-domain">Copy</button></span>
+          </li>
+          <li>
+            <strong>Create Firestore.</strong>
+            <span>Open <a href="${firestoreUrl}" target="_blank" rel="noreferrer">Firestore Database</a>, click Create database, and keep the free defaults unless you know you need another region.</span>
+          </li>
+          <li>
             <strong>Paste it below and save.</strong>
-            <span>Then click Google sign-in. If Google sign-in fails, enable Authentication -> Sign-in method -> Google in Firebase Console.</span>
+            <span>Then click Google sign-in. If it fails, this page will show the exact Firebase console page and exact domain to add for this deployment.</span>
           </li>
         </ol>
+        <div class="setup-hint">
+          <strong>Current setup values</strong>
+          <span>Firebase project: <code>${escapeHtml(projectId || "not saved yet")}</code></span>
+          <span>Authorized domain for Firebase Auth: <code>${escapeHtml(location.hostname)}</code></span>
+          <span>Authorized origin for Google Calendar OAuth: <code>${escapeHtml(location.origin)}</code></span>
+        </div>
         <div class="example-box">
           <strong>Paste something shaped like this:</strong>
           <code>{"apiKey":"...","authDomain":"your-project.firebaseapp.com","projectId":"your-project","appId":"..."}</code>
@@ -673,7 +743,8 @@ function renderSettingsPage() {
           </li>
           <li>
             <strong>Add this app as an authorized JavaScript origin.</strong>
-            <span>Copy exactly: <code>${escapeHtml(location.origin)}</code></span>
+            <span>Copy exactly:</span>
+            <span class="copy-line"><code>${escapeHtml(location.origin)}</code><button data-action="copy-calendar-origin">Copy</button></span>
           </li>
           <li>
             <strong>Paste the client ID below, save, then connect.</strong>
@@ -701,6 +772,25 @@ function renderSettingsPage() {
         </div>
       </section>
       <section class="settings-card">
+        <div class="settings-title">
+          <div>
+            <h3>Daily check-in reminder</h3>
+            <p class="muted">${state.settings.checkinEnabled
+              ? `On - reminds at ${formatTime(state.settings.checkinTime)}${state.settings.checkinText ? ` ("${escapeHtml(state.settings.checkinText)}")` : ""}, then twice more 10 minutes apart if you have not checked in.`
+              : "A web notification that opens the accountability page. Repeats up to 3 times, 10 minutes apart, until you check in. Works while DayPilot is open in a tab or installed as an app."}</p>
+          </div>
+        </div>
+        <div class="form-grid">
+          <label>Fixed time <input type="time" data-checkin-time value="${escapeAttr(state.settings.checkinTime)}"></label>
+          <label>Or say it in words <input data-checkin-text maxlength="120" value="${escapeAttr(state.settings.checkinText)}" placeholder="quarter past 9 in the evening, after dinner..."></label>
+        </div>
+        <div class="button-row">
+          <button class="primary" data-action="save-checkin">${state.settings.checkinEnabled ? "Update reminder" : "Turn on reminder"}</button>
+          <button data-action="test-checkin">Send test notification</button>
+          ${state.settings.checkinEnabled ? `<button data-action="disable-checkin">Turn off</button>` : ""}
+        </div>
+      </section>
+      <section class="settings-card">
         <h3>Synced app settings</h3>
         <label>
           Default chat mode
@@ -719,7 +809,28 @@ function renderModal() {
   if (state.activeModal === "task") return renderTaskModal();
   if (state.activeModal === "questionnaire") return renderQuestionnaireModal();
   if (state.activeModal === "confirm-parse") return renderConfirmParseModal();
+  if (state.activeModal === "recurring-scope") return renderRecurringScopeModal();
   return "";
+}
+
+function renderRecurringScopeModal() {
+  const pending = state.pendingRecurringEdit;
+  const title = pending && pending.updated ? pending.updated.title : "This task";
+  return `
+    <div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="Apply to series?">
+        <header>
+          <h2>This task repeats</h2>
+        </header>
+        <p class="muted">"${escapeHtml(title)}" is a recurring task. Where should these changes apply? This covers every setting, including the calendar alert.</p>
+        <div class="button-row">
+          <button class="primary" data-action="recurring-apply-one">Only this occurrence</button>
+          <button data-action="recurring-apply-all">This and all future occurrences</button>
+          <button data-action="recurring-cancel">Cancel</button>
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function renderQuestionnaireModal() {
@@ -870,6 +981,15 @@ function renderTaskModal() {
               </select>
             </label>
           </div>
+          <div class="form-grid">
+            <label>Calendar alert
+              <select name="notify">
+                <option value="yes" ${activity.notify !== false ? "selected" : ""}>On</option>
+                <option value="no" ${activity.notify === false ? "selected" : ""}>Off</option>
+              </select>
+            </label>
+            <label>Minutes before <input type="number" min="0" max="120" step="5" name="notifyMin" value="${clampNumber(activity.notifyMin, 0, 120, 10)}"></label>
+          </div>
           <label>Task notes <textarea name="note" placeholder="Needs fresh brain. Blocked until reply. For next time start from table...">${escapeHtml(activity.note || "")}</textarea></label>
           ${editing ? `<div class="signal-box">${renderNoteSignals(activity.note || "")}</div>` : ""}
           <div class="button-row">
@@ -994,6 +1114,7 @@ function bindEvents() {
   document.querySelectorAll("[data-status-id]").forEach((button) => {
     button.addEventListener("click", () => {
       updateActivity(button.dataset.statusId, { status: button.dataset.status });
+      markCheckinDone();
       announce("Check-in saved.");
     });
   });
@@ -1074,11 +1195,22 @@ async function handleAction(action) {
     try {
       await signIn(firebaseRuntime);
       firebaseRuntime = await initFirebase(readFirebaseConfig());
+      authNotice = "";
       persist();
       render();
     } catch (error) {
-      toast(error.message);
+      authNotice = friendlyAuthError(error);
+      navigate("settings");
+      toast(authNotice);
     }
+    return;
+  }
+  if (action === "copy-auth-domain") {
+    await copyToClipboard(location.hostname, "Firebase Auth domain copied.");
+    return;
+  }
+  if (action === "copy-calendar-origin") {
+    await copyToClipboard(location.origin, "Google Calendar origin copied.");
     return;
   }
   if (action === "google-signout") {
@@ -1156,6 +1288,40 @@ async function handleAction(action) {
   }
   if (action === "confirm-parse") {
     confirmPendingParse();
+    return;
+  }
+  if (action === "recurring-apply-one") {
+    applyRecurringEdit("one");
+    return;
+  }
+  if (action === "recurring-apply-all") {
+    applyRecurringEdit("all");
+    return;
+  }
+  if (action === "recurring-cancel") {
+    const pending = state.pendingRecurringEdit;
+    state.pendingRecurringEdit = null;
+    state.activeModal = "task";
+    state.editingId = pending ? pending.originalId : state.editingId;
+    render();
+    return;
+  }
+  if (action === "save-checkin") {
+    await saveCheckinReminder();
+    return;
+  }
+  if (action === "test-checkin") {
+    const granted = await ensureNotificationPermission();
+    if (!granted) return;
+    showWebNotification("DayPilot check-in", "This is how the check-in reminder will look. Tap to open the accountability page.");
+    return;
+  }
+  if (action === "disable-checkin") {
+    state.settings.checkinEnabled = false;
+    clearTimeout(checkinTimer);
+    persist();
+    render();
+    toast("Check-in reminder turned off.");
     return;
   }
   if (action === "discard-parse") {
@@ -1328,6 +1494,8 @@ function submitTaskForm(event) {
     durationMin: form.get("durationMin") || 30,
     kind: form.get("kind"),
     recurrence: parseRecurrence(form.get("recurrence")),
+    notify: form.get("notify") !== "no",
+    notifyMin: form.get("notifyMin"),
     note: String(form.get("note") || "").trim(),
     status: (editing && editing.status) || "planned"
   });
@@ -1335,8 +1503,19 @@ function submitTaskForm(event) {
     toast("Give the task a title first.");
     return;
   }
-  ensureBranch(activity.project, activity.branch);
   const wasEditing = Boolean(state.editingId);
+  if (wasEditing && editing) {
+    activity.gcalEventId = editing.gcalEventId;
+    activity.gcalSyncedAt = editing.gcalSyncedAt;
+    activity.gcalInstanceOf = editing.gcalInstanceOf;
+    if (editing.recurrence && activityChanged(editing, activity)) {
+      state.pendingRecurringEdit = { updated: activity, originalId: editing.id };
+      state.activeModal = "recurring-scope";
+      render();
+      return;
+    }
+  }
+  ensureBranch(activity.project, activity.branch);
   if (wasEditing) {
     state.activities = state.activities.map((item) => item.id === state.editingId ? activity : item);
   } else {
@@ -1345,6 +1524,53 @@ function submitTaskForm(event) {
   state.activeModal = null;
   state.editingId = null;
   announce(wasEditing ? "Activity updated." : "Activity added.");
+  if (calendarReady() && hasValidToken()) syncCalendarNow(false);
+}
+
+function activityChanged(before, after) {
+  const fields = ["title", "project", "branch", "date", "start", "durationMin", "kind", "note", "notify", "notifyMin"];
+  if (fields.some((field) => before[field] !== after[field])) return true;
+  return JSON.stringify(before.recurrence || null) !== JSON.stringify(after.recurrence || null);
+}
+
+function advanceRecurrenceDate(key, recurrence) {
+  const date = new Date(`${key}T00:00:00`);
+  if (recurrence.frequency === "weekly") date.setDate(date.getDate() + 7);
+  else if (recurrence.frequency === "monthly") date.setMonth(date.getMonth() + 1);
+  else date.setDate(date.getDate() + 1);
+  return dateToKey(date);
+}
+
+function applyRecurringEdit(scope) {
+  const pending = state.pendingRecurringEdit;
+  if (!pending) return;
+  const original = state.activities.find((item) => item.id === pending.originalId);
+  state.pendingRecurringEdit = null;
+  if (!original) {
+    state.activeModal = null;
+    state.editingId = null;
+    render();
+    return;
+  }
+  const updated = pending.updated;
+  ensureBranch(updated.project, updated.branch);
+  if (scope === "all") {
+    state.activities = state.activities.map((item) => item.id === original.id ? updated : item);
+  } else {
+    const exception = { ...updated, id: makeId(), recurrence: null, gcalEventId: undefined, gcalSyncedAt: undefined };
+    if (original.gcalEventId) exception.gcalInstanceOf = original.gcalEventId;
+    state.activities.push(exception);
+    // The series card moves on to its next occurrence so the exception isn't shown twice.
+    state.activities = state.activities.map((item) => item.id === original.id
+      ? { ...item, date: advanceRecurrenceDate(original.date, original.recurrence), updatedAt: item.updatedAt }
+      : item);
+  }
+  state.activeModal = null;
+  state.editingId = null;
+  announce(scope === "all"
+    ? "Changes applied to this and all occurrences."
+    : "Changes applied to this occurrence only. The series is untouched.");
+  if (calendarReady() && hasValidToken()) syncCalendarNow(false);
 }
 
 function parseNoLlm(text) {
@@ -1623,7 +1849,8 @@ function saveFirebaseConfig() {
     return;
   }
   localStorage.setItem(firebaseKey, JSON.stringify(parsed));
-  toast("Firebase config saved.");
+  authNotice = "";
+  toast(`Firebase config saved. Before Google sign-in, add ${location.hostname} under Authentication -> Settings -> Authorized domains.`);
   boot();
 }
 
@@ -1655,6 +1882,51 @@ function parseFirebaseConfigText(text) {
 
 function asPlainObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function friendlyAuthError(error) {
+  const code = (error && error.code) || "";
+  const message = (error && error.message) || "Sign-in failed.";
+  if (code.includes("unauthorized-domain") || /unauthorized.domain/i.test(message)) {
+    return `This site is not authorized in this Firebase project yet. Add exactly ${location.hostname} in Authentication -> Settings -> Authorized domains, then try Google sign-in again.`;
+  }
+  if (code.includes("operation-not-allowed")) {
+    return "Google sign-in is not enabled in your Firebase project. Open Authentication -> Sign-in method and enable Google.";
+  }
+  if (code.includes("configuration-not-found")) {
+    return "Authentication is not set up in your Firebase project yet. Open Authentication in Firebase Console and click Get started, then enable Google.";
+  }
+  if (code.includes("popup-blocked")) {
+    return "The browser blocked the sign-in popup. Allow popups for this site and try again.";
+  }
+  if (code.includes("popup-closed-by-user") || code.includes("cancelled-popup-request")) {
+    return "Sign-in popup was closed before finishing. Try again.";
+  }
+  if (code.includes("invalid-api-key") || /invalid.api.key/i.test(message)) {
+    return "The saved Firebase config has an invalid API key. Re-copy the config object from your Firebase project settings.";
+  }
+  if (code.includes("network-request-failed")) {
+    return "Network problem while contacting Firebase. Check your connection and retry.";
+  }
+  return message;
+}
+
+function firebaseConsoleUrl(projectId, path = "") {
+  const safeProject = projectId && /^[a-z0-9-]+$/i.test(projectId) ? projectId : "";
+  const suffix = path ? `/${path}` : "";
+  return safeProject
+    ? `https://console.firebase.google.com/project/${encodeURIComponent(safeProject)}${suffix}`
+    : "https://console.firebase.google.com/";
+}
+
+async function copyToClipboard(value, successMessage) {
+  try {
+    if (!navigator.clipboard) throw new Error("Clipboard unavailable");
+    await navigator.clipboard.writeText(value);
+    toast(successMessage);
+  } catch {
+    toast(`Copy this value: ${value}`);
+  }
 }
 
 function readFirebaseConfig() {
@@ -1948,6 +2220,18 @@ async function syncCalendarNow(interactive) {
     let pushed = 0;
     for (const activity of state.activities) {
       if (!activity.gcalEventId) {
+        if (activity.gcalInstanceOf) {
+          // Exception to a recurring series: patch that single instance, don't create a duplicate.
+          const instance = await findInstance(token, calendarId, activity.gcalInstanceOf, activity.date);
+          if (instance) {
+            const event = await patchEvent(token, calendarId, instance.id, activity);
+            activity.gcalEventId = instance.id;
+            activity.gcalSyncedAt = (event && event.updated) || new Date().toISOString();
+            pushed += 1;
+            continue;
+          }
+          delete activity.gcalInstanceOf;
+        }
         const event = await insertEvent(token, calendarId, activity);
         activity.gcalEventId = event.id;
         activity.gcalSyncedAt = event.updated || new Date().toISOString();
@@ -2301,13 +2585,183 @@ function registerServiceWorker() {
   }
 }
 
+let checkinTimer = null;
+
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) {
+    toast("This browser does not support notifications.");
+    return false;
+  }
+  if (Notification.permission === "granted") return true;
+  if (Notification.permission === "denied") {
+    toast("Notifications are blocked for this site. Allow them in the browser's site settings.");
+    return false;
+  }
+  const result = await Notification.requestPermission();
+  if (result !== "granted") {
+    toast("Without permission the check-in reminder cannot notify you.");
+    return false;
+  }
+  return true;
+}
+
+async function showWebNotification(title, body) {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    toast(body);
+    return;
+  }
+  const options = {
+    body,
+    icon: "./assets/icon.svg",
+    badge: "./assets/icon.svg",
+    tag: "daypilot-checkin",
+    renotify: true,
+    data: { url: "./checkin" }
+  };
+  try {
+    const registration = "serviceWorker" in navigator ? await navigator.serviceWorker.getRegistration() : null;
+    if (registration && registration.showNotification) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  } catch (error) {
+    console.warn("SW notification failed", error);
+  }
+  try {
+    const note = new Notification(title, options);
+    note.onclick = () => {
+      window.focus();
+      navigate("stats");
+      note.close();
+    };
+  } catch (error) {
+    toast(body);
+  }
+}
+
+async function saveCheckinReminder() {
+  const timeInput = document.querySelector("[data-checkin-time]");
+  const textInput = document.querySelector("[data-checkin-text]");
+  const text = textInput ? textInput.value.trim() : "";
+  let time = timeInput ? sanitizeTime(timeInput.value, "") : "";
+  if (text) {
+    const resolved = await resolveCheckinTime(text);
+    if (!resolved) {
+      toast(`Could not understand "${text}" as a time. Try "9:15 pm" or set the fixed time instead.`);
+      return;
+    }
+    time = resolved;
+  }
+  if (!time) {
+    toast("Pick a fixed time or describe one in words.");
+    return;
+  }
+  const granted = await ensureNotificationPermission();
+  state.settings.checkinEnabled = true;
+  state.settings.checkinTime = time;
+  state.settings.checkinText = text;
+  const today = todayKey();
+  if (state.checkins[today]) state.checkins[today] = { reminders: 0, done: state.checkins[today].done };
+  persist();
+  render();
+  toast(`Check-in reminder set for ${formatTime(time)} daily${granted ? "" : " (notifications not granted yet)"}.`);
+  scheduleCheckinLoop();
+}
+
+async function resolveCheckinTime(text) {
+  const local = parseTimeFromText(text.toLowerCase());
+  if (local) return local;
+  const token = localStorage.getItem(geminiKey);
+  if (!token) return null;
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(token)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Convert this phrase into a 24-hour clock time. Return only JSON {"time":"HH:MM"}. Phrase: ${text}` }] }],
+        generationConfig: { responseMimeType: "application/json" }
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const raw = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+    if (!raw) return null;
+    const parsed = JSON.parse(extractJsonBlock(raw));
+    return sanitizeTime(parsed && parsed.time, "") || null;
+  } catch {
+    return null;
+  }
+}
+
+function checkinRecord(dateKey) {
+  if (!state.checkins[dateKey]) state.checkins[dateKey] = { reminders: 0, done: false };
+  return state.checkins[dateKey];
+}
+
+function scheduleCheckinLoop() {
+  clearTimeout(checkinTimer);
+  if (!state.settings.checkinEnabled) return;
+  const today = todayKey();
+  const record = checkinRecord(today);
+  const parts = state.settings.checkinTime.split(":").map(Number);
+  const base = new Date();
+  base.setHours(parts[0], parts[1], 0, 0);
+  if (record.done || record.reminders >= 3) {
+    // Done for today: arm tomorrow's first reminder.
+    const tomorrow = new Date(base.getTime() + 24 * 3600000);
+    checkinTimer = setTimeout(scheduleCheckinLoop, Math.min(tomorrow.getTime() - Date.now(), 6 * 3600000));
+    return;
+  }
+  const nextAt = base.getTime() + record.reminders * 10 * 60000;
+  const delay = Math.max(0, nextAt - Date.now());
+  if (delay > 6 * 3600000) {
+    // Timers drift badly at long horizons; re-evaluate closer to the target.
+    checkinTimer = setTimeout(scheduleCheckinLoop, 6 * 3600000);
+    return;
+  }
+  checkinTimer = setTimeout(fireCheckinReminder, delay);
+}
+
+function fireCheckinReminder() {
+  if (!state.settings.checkinEnabled) return;
+  const record = checkinRecord(todayKey());
+  if (record.done || record.reminders >= 3) {
+    scheduleCheckinLoop();
+    return;
+  }
+  const parts = state.settings.checkinTime.split(":").map(Number);
+  const base = new Date();
+  base.setHours(parts[0], parts[1], 0, 0);
+  if (Date.now() < base.getTime() + record.reminders * 10 * 60000) {
+    // Fired early (timer drift); re-arm instead of nagging ahead of time.
+    scheduleCheckinLoop();
+    return;
+  }
+  record.reminders += 1;
+  persist();
+  const nth = record.reminders;
+  showWebNotification(
+    nth === 1 ? "Check-in time" : `Check-in reminder ${nth} of 3`,
+    "How did today actually go? Tap to open the accountability page and log it."
+  );
+  scheduleCheckinLoop();
+}
+
+function markCheckinDone() {
+  const record = checkinRecord(todayKey());
+  if (!record.done) {
+    record.done = true;
+    persist();
+  }
+}
+
 function toast(message) {
   const element = document.querySelector(".toast");
   if (!element) return;
   element.textContent = message;
   element.classList.remove("hidden");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => element.classList.add("hidden"), 2800);
+  toast.timer = setTimeout(() => element.classList.add("hidden"), message.length > 120 ? 10000 : 2800);
 }
 
 function escapeHtml(value) {

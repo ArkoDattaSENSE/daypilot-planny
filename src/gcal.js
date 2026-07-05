@@ -163,12 +163,17 @@ export function parseEventRecurrence(rules) {
 export function activityToEvent(activity) {
   const zone = localTimeZone();
   const startDate = new Date(`${activity.date}T${activity.start}:00`);
+  const notifyOn = activity.notify !== false;
+  const minutes = Number.isFinite(Number(activity.notifyMin)) ? Math.min(120, Math.max(0, Math.round(Number(activity.notifyMin)))) : 10;
   return {
     summary: activity.title,
     description: activity.note || "",
     start: { dateTime: toLocalStamp(startDate), timeZone: zone },
     end: { dateTime: toLocalStamp(endTime(activity.date, activity.start, activity.durationMin)), timeZone: zone },
     recurrence: recurrenceRule(activity.recurrence),
+    reminders: notifyOn
+      ? { useDefault: false, overrides: [{ method: "popup", minutes }] }
+      : { useDefault: false, overrides: [] },
     extendedProperties: {
       private: {
         plannyId: activity.id,
@@ -178,6 +183,32 @@ export function activityToEvent(activity) {
       }
     }
   };
+}
+
+export async function findInstance(token, calendarId, masterEventId, dateKey) {
+  const params = new URLSearchParams({
+    timeMin: `${dateKey}T00:00:00Z`,
+    timeMax: `${dateKey}T23:59:59Z`,
+    maxResults: "10"
+  });
+  // Widen by a day on each side so timezone offsets cannot miss the instance.
+  const dayBefore = new Date(`${dateKey}T00:00:00`);
+  dayBefore.setDate(dayBefore.getDate() - 1);
+  const dayAfter = new Date(`${dateKey}T00:00:00`);
+  dayAfter.setDate(dayAfter.getDate() + 2);
+  params.set("timeMin", dayBefore.toISOString());
+  params.set("timeMax", dayAfter.toISOString());
+  const page = await api(token, "GET", `/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(masterEventId)}/instances?${params.toString()}`);
+  if (!page || !Array.isArray(page.items)) return null;
+  return page.items.find((item) => {
+    const start = item.start && (item.start.dateTime || item.start.date);
+    if (!start) return false;
+    if (item.start.dateTime) {
+      const begin = new Date(item.start.dateTime);
+      return `${begin.getFullYear()}-${pad(begin.getMonth() + 1)}-${pad(begin.getDate())}` === dateKey;
+    }
+    return item.start.date === dateKey;
+  }) || null;
 }
 
 export async function insertEvent(token, calendarId, activity) {
@@ -231,12 +262,27 @@ export function eventToActivityFields(event) {
     startTime = "09:00";
     durationMin = 60;
   }
+  let notify = true;
+  let notifyMin = 10;
+  if (event.reminders) {
+    if (event.reminders.useDefault) {
+      notify = true;
+    } else if (Array.isArray(event.reminders.overrides) && event.reminders.overrides.length) {
+      notify = true;
+      notifyMin = Number(event.reminders.overrides[0].minutes);
+      if (!Number.isFinite(notifyMin)) notifyMin = 10;
+    } else {
+      notify = false;
+    }
+  }
   return {
     title: event.summary || "Untitled event",
     note: event.description || "",
     date,
     start: startTime,
     durationMin,
-    recurrence: parseEventRecurrence(event.recurrence)
+    recurrence: parseEventRecurrence(event.recurrence),
+    notify,
+    notifyMin
   };
 }
