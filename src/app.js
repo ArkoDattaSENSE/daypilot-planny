@@ -208,18 +208,21 @@ function sanitizeActivity(item) {
   if (!item || typeof item !== "object") return null;
   const title = String(item.title || "").trim().slice(0, 200);
   if (!title) return null;
+  const recurrence = normalizeRecurrence(item.recurrence);
+  const date = alignDateToRecurrence(sanitizeDateKey(item.date, todayKey()), recurrence);
   return {
     id: typeof item.id === "string" && item.id ? item.id : makeId(),
     title,
     project: normalizeProject(item.project),
     branch: normalizeBranch(item.branch),
-    date: sanitizeDateKey(item.date, todayKey()),
+    date,
     start: sanitizeTime(item.start, "09:00"),
     durationMin: clampNumber(item.durationMin, 5, 600, 30),
     kind: sanitizeKind(item.kind),
-    recurrence: normalizeRecurrence(item.recurrence),
+    recurrence,
     note: String(item.note || "").slice(0, 2000),
     status: sanitizeStatus(item.status),
+    locked: typeof item.locked === "boolean" ? item.locked : inferLockedActivity(item),
     notify: item.notify !== false,
     notifyMin: clampNumber(item.notifyMin, 0, 120, 10),
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
@@ -474,7 +477,7 @@ function renderActivityList(items, className) {
         <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${escapeAttr(activity.id)}">
           <span>${formatTime(activity.start)}</span>
           <strong>${escapeHtml(activity.title)}</strong>
-          <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
+          <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}${activity.locked ? " - fixed" : ""}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
         </button>
       `).join("")}
     </div>
@@ -887,7 +890,7 @@ function renderConfirmParseModal() {
                 <input type="checkbox" checked data-confirm-activity="${index}">
                 <span>
                   <strong>${escapeHtml(activity.title)}</strong>
-                  <em>${formatDate(activity.date)} ${formatTime(activity.start)} - ${activity.durationMin}m - ${escapeHtml(activity.project)} / ${escapeHtml(activity.branch)}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
+                  <em>${formatDate(activity.date)} ${formatTime(activity.start)} - ${activity.durationMin}m - ${escapeHtml(activity.project)} / ${escapeHtml(activity.branch)}${activity.locked ? " - fixed" : ""}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
                 </span>
               </label>
             `).join("")}
@@ -989,6 +992,12 @@ function renderTaskModal() {
               </select>
             </label>
             <label>Minutes before <input type="number" min="0" max="120" step="5" name="notifyMin" value="${clampNumber(activity.notifyMin, 0, 120, 10)}"></label>
+            <label>Rescheduling
+              <select name="locked">
+                <option value="no" ${activity.locked ? "" : "selected"}>Flexible</option>
+                <option value="yes" ${activity.locked ? "selected" : ""}>Fixed time</option>
+              </select>
+            </label>
           </div>
           <label>Task notes <textarea name="note" placeholder="Needs fresh brain. Blocked until reply. For next time start from table...">${escapeHtml(activity.note || "")}</textarea></label>
           ${editing ? `<div class="signal-box">${renderNoteSignals(activity.note || "")}</div>` : ""}
@@ -1433,6 +1442,15 @@ async function submitChat() {
       button.textContent = state.chatClarify ? "Answer & plan" : "Add from chat";
     }
   };
+  const reschedule = applyRescheduleRequest(text);
+  if (reschedule.handled) {
+    resetButton();
+    state.chatDraft = "";
+    state.activeModal = null;
+    announce(reschedule.message);
+    if (calendarReady() && hasValidToken() && reschedule.changed) syncCalendarNow(false);
+    return;
+  }
   if (mode !== "gemini") {
     const parsed = parseNoLlm(text);
     if (!parsed.activities.length && !parsed.notes.length) {
@@ -1494,6 +1512,7 @@ function submitTaskForm(event) {
     durationMin: form.get("durationMin") || 30,
     kind: form.get("kind"),
     recurrence: parseRecurrence(form.get("recurrence")),
+    locked: form.get("locked") === "yes",
     notify: form.get("notify") !== "no",
     notifyMin: form.get("notifyMin"),
     note: String(form.get("note") || "").trim(),
@@ -1528,7 +1547,7 @@ function submitTaskForm(event) {
 }
 
 function activityChanged(before, after) {
-  const fields = ["title", "project", "branch", "date", "start", "durationMin", "kind", "note", "notify", "notifyMin"];
+  const fields = ["title", "project", "branch", "date", "start", "durationMin", "kind", "note", "locked", "notify", "notifyMin"];
   if (fields.some((field) => before[field] !== after[field])) return true;
   return JSON.stringify(before.recurrence || null) !== JSON.stringify(after.recurrence || null);
 }
@@ -1573,6 +1592,152 @@ function applyRecurringEdit(scope) {
   if (calendarReady() && hasValidToken()) syncCalendarNow(false);
 }
 
+function applyRescheduleRequest(text) {
+  const lines = String(text || "").split(/\n|;/).map((line) => line.trim()).filter(Boolean);
+  const requests = lines.map(parseRescheduleLine).filter(Boolean);
+  if (!requests.length) return { handled: false, changed: false, message: "" };
+  const messages = [];
+  let changed = 0;
+  requests.forEach((request) => {
+    const match = findActivityForRequest(request.target);
+    if (!match) {
+      messages.push(`Could not find "${request.target || "that task"}" to reschedule.`);
+      return;
+    }
+    if (isLockedActivity(match)) {
+      messages.push(`Skipped "${match.title}" because it is fixed/immovable.`);
+      return;
+    }
+    const before = { ...match };
+    const moved = applyRescheduleToActivity(match, request);
+    if (!moved) {
+      messages.push(`Could not find a new date or time for "${match.title}".`);
+      return;
+    }
+    state.activities = state.activities.map((activity) => activity.id === moved.id ? moved : activity);
+    settleFlexibleDay(moved.date, new Set([moved.id]));
+    if (before.date !== moved.date) settleFlexibleDay(before.date, new Set());
+    changed += 1;
+    messages.push(`Rescheduled "${moved.title}" to ${formatDate(moved.date)} ${formatTime(moved.start)}.`);
+  });
+  return {
+    handled: true,
+    changed: changed > 0,
+    message: messages.join(" ")
+  };
+}
+
+function parseRescheduleLine(line) {
+  const lower = line.toLowerCase();
+  if (!/\b(reschedule|move|shift|push|postpone|bump|bring)\b/.test(lower)) return null;
+  const target = extractRescheduleTarget(line);
+  const date = parseDateFromText(lower);
+  const time = parseTimeFromText(lower);
+  const direction = /\b(up|earlier|bring)\b/.test(lower) ? -1 : /\b(down|later|push|postpone|bump)\b/.test(lower) ? 1 : 0;
+  const shiftMin = direction ? parseDurationFromText(lower) : null;
+  if (!target || (!date && !time && !shiftMin)) return null;
+  return { target, date, time, shiftMin: shiftMin ? direction * shiftMin : 0 };
+}
+
+function extractRescheduleTarget(line) {
+  const cleaned = line.replace(/\s+/g, " ").trim();
+  const patterns = [
+    /\b(?:reschedule|move|shift)\s+(.+?)\s+\b(?:to|for|on|at)\b/i,
+    /\b(?:push|postpone|bump)\s+(.+?)\s+\b(?:by|down|later|to|for|on|at)\b/i,
+    /\b(?:bring|move|shift)\s+(.+?)\s+\b(?:up|earlier)\b/i
+  ];
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match) return cleanTaskTitle(match[1]);
+  }
+  return "";
+}
+
+function findActivityForRequest(targetText) {
+  const target = normalizeMatchText(targetText);
+  if (!target) return null;
+  const candidates = state.activities.map((activity) => ({
+    activity,
+    score: matchScore(target, normalizeMatchText(activity.title))
+  })).filter((item) => item.score > 0);
+  candidates.sort((a, b) => b.score - a.score || `${a.activity.date} ${a.activity.start}`.localeCompare(`${b.activity.date} ${b.activity.start}`));
+  return candidates.length ? candidates[0].activity : null;
+}
+
+function matchScore(target, title) {
+  if (!target || !title) return 0;
+  if (title === target) return 100;
+  if (title.includes(target) || target.includes(title)) return 70 + Math.min(target.length, title.length);
+  const words = target.split(" ").filter((word) => word.length > 2);
+  const hits = words.filter((word) => title.includes(word)).length;
+  return hits ? hits * 10 : 0;
+}
+
+function normalizeMatchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\b(the|a|an|task|event|meeting)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function applyRescheduleToActivity(activity, request) {
+  const next = { ...activity };
+  if (request.date) next.date = request.date;
+  if (request.time) next.start = request.time;
+  if (request.shiftMin) next.start = minutesToTime(timeToMinutes(next.start) + request.shiftMin);
+  const protectedMoved = avoidLockedConflicts(next);
+  protectedMoved.updatedAt = new Date().toISOString();
+  return sanitizeActivity(protectedMoved);
+}
+
+function avoidLockedConflicts(activity) {
+  const next = { ...activity };
+  let guard = 0;
+  while (guard < 50) {
+    guard += 1;
+    const conflict = state.activities.find((candidate) => candidate.id !== next.id && candidate.date === next.date && isLockedActivity(candidate) && activitiesOverlap(next, candidate));
+    if (!conflict) return next;
+    next.start = minutesToTime(timeToMinutes(conflict.start) + clampNumber(conflict.durationMin, 5, 600, 30));
+  }
+  return next;
+}
+
+function settleFlexibleDay(date, protectedIds) {
+  const occupied = state.activities
+    .filter((activity) => activity.date === date && (isLockedActivity(activity) || protectedIds.has(activity.id)))
+    .map((activity) => ({ ...activity }));
+  const flexible = state.activities
+    .filter((activity) => activity.date === date && !isLockedActivity(activity) && !protectedIds.has(activity.id))
+    .sort((a, b) => timeToMinutes(a.start) - timeToMinutes(b.start));
+  flexible.forEach((activity) => {
+    let next = { ...activity };
+    let guard = 0;
+    while (guard < 100) {
+      guard += 1;
+      const conflict = occupied.find((item) => activitiesOverlap(next, item));
+      if (!conflict) break;
+      next.start = minutesToTime(timeToMinutes(conflict.start) + clampNumber(conflict.durationMin, 5, 600, 30));
+      next.updatedAt = new Date().toISOString();
+    }
+    occupied.push(next);
+    state.activities = state.activities.map((item) => item.id === next.id ? sanitizeActivity(next) : item);
+  });
+}
+
+function activitiesOverlap(a, b) {
+  const aStart = timeToMinutes(a.start);
+  const aEnd = aStart + clampNumber(a.durationMin, 5, 600, 30);
+  const bStart = timeToMinutes(b.start);
+  const bEnd = bStart + clampNumber(b.durationMin, 5, 600, 30);
+  return aStart < bEnd && aEnd > bStart;
+}
+
+function isLockedActivity(activity) {
+  return Boolean(activity && (activity.locked || inferLockedActivity(activity)));
+}
+
 function parseNoLlm(text) {
   const lines = text.split(/\n|;/).map((line) => line.replace(/^[-*\d.)\s]+(?=[a-zA-Z#])/, "").trim()).filter(Boolean);
   const parsed = { activities: [], notes: [] };
@@ -1608,17 +1773,19 @@ function parseNoLlm(text) {
     }
     const recurrence = parseRecurrence(lower);
     const durationMin = parseDurationFromText(lower) || 30;
+    const dateValue = alignDateToRecurrence(date || (recurrence ? nextDateForRecurrence(recurrence) : todayKey()), recurrence);
     const activity = sanitizeActivity({
       id: makeId(),
       title: cleanTaskTitle(line),
       project,
       branch,
-      date: date || (recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+      date: dateValue,
       start: parseTimeFromText(lower) || nextOpenTime(),
       durationMin,
       kind: inferKind(lower),
       recurrence,
       note: "",
+      locked: inferLockedActivity({ title: line, kind: inferKind(lower), recurrence }),
       status: "planned"
     });
     if (!activity) return;
@@ -1758,6 +1925,14 @@ For each activity:
 - durationMin: number.
 - kind: focus/admin/routine/personal.
 - recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"}. For "every Wednesday", use {"frequency":"weekly","byDay":"WE"}.
+- locked: true for meetings/classes/appointments/exams/seminars/calls or anything the user says is fixed/immovable. false for flexible work.
+
+Hard date rules:
+- Today is ${todayKey()} (${weekdayName(weekdayCodeForDate(todayKey()))}).
+- If recurrence.byDay is set, date MUST be the next occurrence of that exact weekday. A Wednesday recurrence can NEVER have a Thursday date.
+- "On Wednesdays I have meeting X" means a weekly Wednesday fixed meeting: recurrence {"frequency":"weekly","byDay":"WE"}, locked true, and date equal to the next Wednesday.
+- "on Wednesday" singular means one event on the upcoming Wednesday unless the user also says every/each/weekly/Wednesdays.
+- If an item is fixed/locked, never move it to solve a conflict.
 
 For notes:
 - project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5.
@@ -1814,17 +1989,22 @@ function normalizeParsedActivity(item, originalText) {
   if (!item || typeof item !== "object") return null;
   const recurrence = normalizeRecurrence(item.recurrence) || parseRecurrence(`${item.sourceText || ""} ${item.title || ""} ${originalText || ""}`);
   const sourceText = item.sourceText || originalText || item.title || "";
+  const date = alignDateToRecurrence(
+    sanitizeDateKey(item.date, recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+    recurrence
+  );
   return sanitizeActivity({
     id: makeId(),
     title: cleanTaskTitle(item.title || sourceText),
     project: normalizeProject(item.project || projectFromText(sourceText.toLowerCase())),
     branch: normalizeBranch(item.branch || branchFromText(sourceText.toLowerCase())),
-    date: sanitizeDateKey(item.date, recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+    date,
     start: sanitizeTime(item.start, nextOpenTime()),
     durationMin: item.durationMin,
     kind: item.kind || (recurrence ? "routine" : "focus"),
     recurrence,
     note: "",
+    locked: typeof item.locked === "boolean" ? item.locked : inferLockedActivity({ ...item, title: item.title || sourceText, sourceText }),
     status: "planned"
   });
 }
@@ -2180,6 +2360,11 @@ async function syncCalendarNow(interactive) {
         return;
       }
       const fields = eventToActivityFields(event);
+      fields.locked = priv.plannyLocked === "true"
+        ? true
+        : priv.plannyLocked === "false"
+          ? false
+          : !priv.plannyId || inferLockedActivity(fields);
       if (!fields.date) return;
       const eventUpdated = event.updated || new Date().toISOString();
       if (existing) {
@@ -2203,6 +2388,7 @@ async function syncCalendarNow(interactive) {
         start: fields.start,
         durationMin: fields.durationMin,
         recurrence: fields.recurrence,
+        locked: fields.locked || !priv.plannyId,
         project: priv.plannyProject || "Calendar",
         branch: priv.plannyBranch || "Main",
         kind: priv.plannyKind,
@@ -2457,18 +2643,34 @@ function composeTime(hourText, minuteText, suffix) {
 }
 
 function inferKind(lower) {
+  if (/meeting|standup|seminar|class|lecture|exam|appointment|interview/.test(lower)) return "routine";
   if (/walk|workout|sleep|call/.test(lower)) return "personal";
   if (/mail|send|admin|upload|print/.test(lower)) return "admin";
   if (/daily|every|routine/.test(lower)) return "routine";
   return "focus";
 }
 
+function inferLockedActivity(item) {
+  const text = `${item && item.title ? item.title : ""} ${item && item.note ? item.note : ""} ${item && item.sourceText ? item.sourceText : ""}`.toLowerCase();
+  if (/\b(flexible|movable|can move|reschedulable)\b/.test(text)) return false;
+  if (/\b(fixed|immovable|do not move|don't move|cannot move|can't move|hard commitment)\b/.test(text)) return true;
+  if (/\b(meeting|standup|sync|class|lecture|seminar|exam|appointment|interview|defen[cs]e|doctor|dentist)\b/.test(text)) return true;
+  const kind = item && item.kind ? String(item.kind).toLowerCase() : "";
+  return kind === "routine" && /\b(call|meeting|class|lecture|seminar)\b/.test(text);
+}
+
 function parseRecurrence(value) {
   const lower = String(value || "").toLowerCase().trim();
   if (!lower) return null;
   if (/\b(daily|every day|each day)\b/.test(lower)) return { frequency: "daily" };
-  const weekday = lower.match(/\b(every|each|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/);
+  const weekday = lower.match(/\b(every|each)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/);
   if (weekday) return { frequency: "weekly", byDay: weekdayCode(weekday[2]) };
+  const onPluralWeekday = lower.match(/\bon\s+(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/);
+  if (onPluralWeekday) return { frequency: "weekly", byDay: weekdayCode(onPluralWeekday[1]) };
+  const pluralWeekday = lower.match(/\b(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/);
+  if (pluralWeekday && /\b(weekly|regular|recurring|have|happens|meets|meeting|class|lecture|seminar)\b/.test(lower)) {
+    return { frequency: "weekly", byDay: weekdayCode(pluralWeekday[1]) };
+  }
   if (/\bweekly\b/.test(lower)) return { frequency: "weekly" };
   if (/\bmonthly\b/.test(lower)) return { frequency: "monthly" };
   return null;
@@ -2482,6 +2684,17 @@ function normalizeRecurrence(value) {
   const recurrence = { frequency };
   if (value.byDay) recurrence.byDay = String(value.byDay).toUpperCase().slice(0, 2);
   return recurrence;
+}
+
+function alignDateToRecurrence(dateKey, recurrence) {
+  const clean = sanitizeDateKey(dateKey, todayKey());
+  if (!recurrence || recurrence.frequency !== "weekly" || !recurrence.byDay) return clean;
+  return dateMatchesRecurrence(clean, recurrence) ? clean : nextDateForRecurrence(recurrence);
+}
+
+function dateMatchesRecurrence(dateKey, recurrence) {
+  if (!recurrence || recurrence.frequency !== "weekly" || !recurrence.byDay) return true;
+  return weekdayCodeForDate(dateKey) === String(recurrence.byDay || "").toUpperCase();
 }
 
 function recurrenceLabel(recurrence) {
@@ -2518,6 +2731,11 @@ function weekdayCode(dayName) {
   return ({ mon: "MO", tue: "TU", wed: "WE", thu: "TH", fri: "FR", sat: "SA", sun: "SU" })[key] || "";
 }
 
+function weekdayCodeForDate(dateKey) {
+  const date = new Date(`${sanitizeDateKey(dateKey, todayKey())}T00:00:00`);
+  return ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][date.getDay()];
+}
+
 function weekdayName(code) {
   return ({ MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday", SU: "Sunday" })[String(code || "").toUpperCase()] || "week";
 }
@@ -2530,7 +2748,7 @@ function cleanTitle(line) {
   return line
     .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly|next week)\b/gi, "")
     .replace(/\b(every|each|on|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
-    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b\d+(?:\.\d+)?\s?(m|min|minutes|h|hr|hours)\b/gi, "")
     .replace(/\b([01]?\d|2[0-3]):[0-5]\d\s*(am|pm)?\b/gi, "")
     .replace(/\b\d{1,2}\s*(am|pm)\b/gi, "")
@@ -2542,9 +2760,10 @@ function cleanTitle(line) {
 
 function cleanTaskTitle(value) {
   const cleaned = cleanTitle(String(value || "")
-    .replace(/^(add|create|schedule|make|remind me to|i need to|please|can you)\s+/i, "")
+    .replace(/^(add|create|schedule|make|remind me to|i need to|i have|there is|please|can you)\s+/i, "")
     .replace(/\b(to my calendar|in my planner|as a task)\b/gi, ""));
-  return titleCase(cleaned.charAt(0).toLowerCase() === cleaned.charAt(0) ? cleaned : cleaned);
+  const trimmed = cleaned.replace(/^(i have|there is)\s+/i, "");
+  return titleCase(trimmed.charAt(0).toLowerCase() === trimmed.charAt(0) ? trimmed : trimmed);
 }
 
 function firstUsefulLine(text, fallback) {

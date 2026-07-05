@@ -179,7 +179,8 @@ export function activityToEvent(activity) {
         plannyId: activity.id,
         plannyProject: activity.project || "Inbox",
         plannyBranch: activity.branch || "Main",
-        plannyKind: activity.kind || "focus"
+        plannyKind: activity.kind || "focus",
+        plannyLocked: activity.locked ? "true" : "false"
       }
     }
   };
@@ -282,6 +283,7 @@ export function eventToActivityFields(event) {
     start: startTime,
     durationMin,
     recurrence: parseEventRecurrence(event.recurrence),
+    locked: Boolean(event.locked),
     notify,
     notifyMin
   };
