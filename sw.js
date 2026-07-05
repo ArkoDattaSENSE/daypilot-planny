@@ -6,6 +6,7 @@ const assets = [
   "./manifest.webmanifest",
   "./src/app.js",
   "./src/firebase.js",
+  "./src/firebase-config.js",
   "./assets/icon.svg"
 ];
 

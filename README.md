@@ -22,7 +22,33 @@ python3 -m http.server 8000
 
 Open `http://127.0.0.1:8000/`.
 
-## Firebase Spark setup
+## Setting Firebase Up
+
+Your current Firebase project is:
+
+```text
+labtrack-559e9
+```
+
+Codex has set this in `.firebaserc`, so the normal deploy command is:
+
+```bash
+npm run deploy:firebase
+```
+
+That command builds the clean static artifact into `dist/` and deploys only that folder plus Firestore rules.
+
+The Firebase Web App config for `labtrack` is already wired into `src/firebase-config.js`, so the deployed app can use Firebase Auth and Firestore without pasting JSON into Settings. Settings still lets you override the config locally if needed.
+
+To find a Firebase project ID later:
+
+```bash
+FIREBASE_CLI_DISABLE_UPDATE_CHECK=true ./node_modules/.bin/firebase projects:list
+```
+
+The project ID is the value in the `Project ID` column, not the display name or project number.
+
+For a new project, keep it on the free Spark plan and then enable:
 
 1. Create a Firebase project on the Spark plan.
 2. Enable Authentication, then enable the Google provider.
@@ -56,19 +82,13 @@ Then enable Pages in the repo settings with GitHub Actions as the source. The in
 
 Firebase Hosting is optional because the frontend is designed for GitHub Pages, but the config is included:
 
-```bash
-cp .firebaserc.example .firebaserc
-# edit .firebaserc with your project id
-firebase deploy --only firestore:rules,hosting
-```
-
-In this sandbox, use the project script instead of the global Firebase binary:
+Use the project script instead of the global Firebase binary:
 
 ```bash
 npm run deploy:firebase
 ```
 
-If `.firebaserc` is not set yet, deploy with:
+If you want to override `.firebaserc` for one deploy:
 
 ```bash
 FIREBASE_PROJECT=your-project-id npm run deploy:firebase

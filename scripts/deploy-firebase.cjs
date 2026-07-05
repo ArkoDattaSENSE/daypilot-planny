@@ -5,6 +5,7 @@ const { spawnSync } = require("child_process");
 const root = process.cwd();
 const firebaserc = path.join(root, ".firebaserc");
 const firebaseBin = path.join(root, "node_modules", ".bin", "firebase");
+const buildScript = path.join(root, "scripts", "build-pages.cjs");
 const projectFromEnv = process.env.FIREBASE_PROJECT || process.env.GCLOUD_PROJECT || "";
 const projectFromFile = readProjectId();
 const projectId = projectFromEnv || projectFromFile;
@@ -30,6 +31,15 @@ const args = [
   "--project",
   projectId
 ];
+
+const build = spawnSync(process.execPath, [buildScript], {
+  stdio: "inherit",
+  env: process.env
+});
+
+if (build.status !== 0) {
+  process.exit(build.status == null ? 1 : build.status);
+}
 
 const result = spawnSync(firebaseBin, args, {
   stdio: "inherit",

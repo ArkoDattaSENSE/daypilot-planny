@@ -1,12 +1,10 @@
 {
   "hosting": {
-    "public": ".",
+    "public": "dist",
     "ignore": [
       "firebase.json",
       "**/.*",
       "**/node_modules/**",
-      "daypilot_lazy_scheduler_bundle/**",
-      "daypilot_lazy_scheduler_bundle_v6.zip",
       "scripts/**"
     ],
     "rewrites": [

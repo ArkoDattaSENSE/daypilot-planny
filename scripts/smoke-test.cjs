@@ -7,6 +7,7 @@ const required = [
   "styles.css",
   "src/app.js",
   "src/firebase.js",
+  "src/firebase-config.js",
   "sw.js",
   "manifest.webmanifest",
   "firestore.rules",
@@ -36,6 +37,8 @@ for (const route of ["today", "dump", "week", "now", "checkin", "settings"]) {
 for (const phrase of ["Move future task?", "DayPilot Timetable", "Google sign-in", "Multi-add task intake"]) {
   if (!app.includes(phrase)) throw new Error(`Missing UI phrase: ${phrase}`);
 }
+const config = fs.readFileSync(path.join(root, "src/firebase-config.js"), "utf8");
+if (!config.includes("labtrack-559e9")) throw new Error("Default Firebase config is not wired");
 
 const rules = fs.readFileSync(path.join(root, "firestore.rules"), "utf8");
 if (!rules.includes("request.auth.uid == userId")) throw new Error("Firestore rules do not enforce per-user access");

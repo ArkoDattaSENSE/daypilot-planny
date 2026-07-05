@@ -1,4 +1,5 @@
 import { initFirebase, saveCloudState, loadCloudState, signIn, signOut } from "./firebase.js";
+import { defaultFirebaseConfig } from "./firebase-config.js";
 
 const storageKey = "daypilot-state-v1";
 const firebaseKey = "daypilot-firebase-config";
@@ -687,9 +688,9 @@ function saveFirebaseConfig() {
 function readFirebaseConfig() {
   try {
     const text = localStorage.getItem(firebaseKey);
-    return text ? JSON.parse(text) : null;
+    return text ? JSON.parse(text) : defaultFirebaseConfig;
   } catch {
-    return null;
+    return defaultFirebaseConfig;
   }
 }
 
