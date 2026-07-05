@@ -58,14 +58,97 @@ function loadState() {
 function normalizeState(input) {
   const base = JSON.parse(JSON.stringify(blankState));
   const next = { ...base, ...(input || {}) };
+  next.view = ["day", "week", "month"].includes(next.view) ? next.view : "day";
   next.mood = { ...base.mood, ...(input && input.mood ? input.mood : {}) };
+  next.mood.label = String(next.mood.label || "Okay").slice(0, 60);
+  next.mood.energy = clampNumber(next.mood.energy, 0, 100, 55);
+  next.mood.stress = clampNumber(next.mood.stress, 0, 100, 35);
   next.settings = { ...base.settings, ...(input && input.settings ? input.settings : {}) };
-  next.activities = Array.isArray(next.activities) ? next.activities : [];
-  next.projectNotes = Array.isArray(next.projectNotes) ? next.projectNotes : [];
-  next.branches = Array.isArray(next.branches) ? next.branches : [];
-  next.selectedProject = next.selectedProject || firstProject(next) || "Inbox";
+  next.settings.parserMode = next.settings.parserMode === "gemini" ? "gemini" : "manual";
+  next.settings.workDone = clampNumber(next.settings.workDone, 0, 100, 0);
+  next.settings.exhaustion = clampNumber(next.settings.exhaustion, 0, 100, 20);
+  next.activities = (Array.isArray(next.activities) ? next.activities : []).map(sanitizeActivity).filter(Boolean);
+  next.projectNotes = (Array.isArray(next.projectNotes) ? next.projectNotes : []).map(sanitizeNote).filter(Boolean);
+  next.branches = (Array.isArray(next.branches) ? next.branches : []).map(sanitizeBranchEntry).filter(Boolean);
+  next.selectedProject = normalizeProject(next.selectedProject || firstProject(next));
   next.checkins = next.checkins && typeof next.checkins === "object" ? next.checkins : {};
+  next.chatDraft = typeof next.chatDraft === "string" ? next.chatDraft : "";
   return next;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+function sanitizeDateKey(value, fallback) {
+  const text = String(value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return fallback;
+  const date = new Date(`${text}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? fallback : dateToKey(date);
+}
+
+function sanitizeTime(value, fallback) {
+  const match = String(value || "").trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return fallback;
+  return `${match[1].padStart(2, "0")}:${match[2]}`;
+}
+
+function sanitizeKind(value) {
+  return ["focus", "admin", "routine", "personal"].includes(value) ? value : "focus";
+}
+
+function sanitizeStatus(value) {
+  return ["planned", "done", "partial", "missed", "blocked"].includes(value) ? value : "planned";
+}
+
+function sanitizeActivity(item) {
+  if (!item || typeof item !== "object") return null;
+  const title = String(item.title || "").trim().slice(0, 200);
+  if (!title) return null;
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : makeId(),
+    title,
+    project: normalizeProject(item.project),
+    branch: normalizeBranch(item.branch),
+    date: sanitizeDateKey(item.date, todayKey()),
+    start: sanitizeTime(item.start, "09:00"),
+    durationMin: clampNumber(item.durationMin, 5, 600, 30),
+    kind: sanitizeKind(item.kind),
+    note: String(item.note || "").slice(0, 2000),
+    status: sanitizeStatus(item.status)
+  };
+}
+
+function sanitizeNote(item) {
+  if (!item || typeof item !== "object") return null;
+  const text = String(item.text || "").trim().slice(0, 2000);
+  if (!text) return null;
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : makeId(),
+    project: normalizeProject(item.project),
+    branch: normalizeBranch(item.branch),
+    section: noteSections().includes(item.section) ? item.section : "task_seeds",
+    text,
+    priority: clampNumber(item.priority, 1, 5, 3),
+    linkedActivityId: typeof item.linkedActivityId === "string" ? item.linkedActivityId : undefined,
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+  };
+}
+
+function sanitizeBranchEntry(item) {
+  if (!item || typeof item !== "object") return null;
+  const name = normalizeBranch(item.name);
+  return {
+    id: typeof item.id === "string" && item.id ? item.id : makeId(),
+    project: normalizeProject(item.project),
+    name,
+    status: ["active", "paused"].includes(item.status) ? item.status : "active",
+    priority: clampNumber(item.priority, 1, 5, 3),
+    goal: String(item.goal || "").slice(0, 500),
+    createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+  };
 }
 
 function saveLocal() {
@@ -259,7 +342,7 @@ function renderActivityList(items, className) {
         <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${activity.id}">
           <span>${formatTime(activity.start)}</span>
           <strong>${escapeHtml(activity.title)}</strong>
-          <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}</em>
+          <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
         </button>
       `).join("")}
     </div>
@@ -541,6 +624,7 @@ function renderTaskModal() {
             <label>Date <input type="date" name="date" value="${escapeAttr(activity.date)}"></label>
             <label>Start <input type="time" name="start" value="${escapeAttr(activity.start)}"></label>
             <label>Minutes <input type="number" min="5" step="5" name="durationMin" value="${activity.durationMin}"></label>
+            <label>Repeats <input name="recurrence" value="${escapeAttr(recurrenceInputValue(activity.recurrence))}" placeholder="every Wednesday, daily, weekly"></label>
             <label>Type
               <select name="kind">
                 ${["focus", "admin", "routine", "personal"].map((kind) => `<option value="${kind}" ${activity.kind === kind ? "selected" : ""}>${titleCase(kind)}</option>`).join("")}
@@ -769,6 +853,7 @@ function submitTaskForm(event) {
     start: form.get("start") || "09:00",
     durationMin: Number(form.get("durationMin") || 30),
     kind: form.get("kind") || "focus",
+    recurrence: parseRecurrence(form.get("recurrence")),
     note: form.get("note").trim(),
     status: (getEditingActivity() && getEditingActivity().status) || "planned"
   };
@@ -808,17 +893,19 @@ function parseNoLlm(text) {
     }
     const duration = lower.match(/(\d+)\s?(m|min|minutes|h|hr|hours)/);
     const time = lower.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/);
+    const recurrence = parseRecurrence(lower);
     const durationMin = duration ? Number(duration[1]) * (duration[2].startsWith("h") ? 60 : 1) : 30;
-    const date = lower.includes("tomorrow") ? addDays(todayKey(), 1) : todayKey();
+    const date = lower.includes("tomorrow") ? addDays(todayKey(), 1) : recurrence ? nextDateForRecurrence(recurrence) : todayKey();
     parsed.activities.push({
       id: makeId(),
-      title: cleanTitle(line),
+      title: cleanTaskTitle(line),
       project,
       branch,
       date,
       start: time ? normalizeTime(time) : nextOpenTime(),
       durationMin,
       kind: inferKind(lower),
+      recurrence,
       note: "",
       status: "planned"
     });
@@ -828,7 +915,23 @@ function parseNoLlm(text) {
 }
 
 async function parseWithGemini(text, token) {
-  const prompt = `Return only JSON with shape {"activities":[],"notes":[]}. Activities need title, project, branch, date YYYY-MM-DD or empty, start HH:MM or empty, durationMin number, kind one of focus/admin/routine/personal. Notes need project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5. Text: ${text}`;
+  const prompt = `Return only JSON with shape {"activities":[],"notes":[]}. Do not wrap in markdown.
+
+For each activity:
+- title: a short clean task title only. Do NOT copy the whole user prompt. Remove words like "add", "schedule", "every Wednesday", dates, times, duration, and filler. Example input "every Wednesday 9am do lab journal 30m" -> title "Lab journal".
+- sourceText: the exact input line that created this activity.
+- project, branch
+- date: YYYY-MM-DD for the next occurrence, or empty if unknown.
+- start: HH:MM 24-hour time, or empty.
+- durationMin: number.
+- kind: focus/admin/routine/personal.
+- recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"}. For "every Wednesday", use {"frequency":"weekly","byDay":"WE"}.
+
+For notes:
+- project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5.
+
+Text:
+${text}`;
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(token)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -839,20 +942,10 @@ async function parseWithGemini(text, token) {
   const raw = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0].text;
   const json = raw.replace(/```json|```/g, "").trim();
   const parsed = JSON.parse(json);
+  const activities = Array.isArray(parsed) ? parsed : (parsed.activities || []);
   return {
-    activities: (parsed.activities || []).map((item) => ({
-    id: makeId(),
-    title: item.title || "Untitled",
-    project: normalizeProject(item.project),
-    branch: normalizeBranch(item.branch),
-    date: item.date || todayKey(),
-    start: item.start || nextOpenTime(),
-    durationMin: Number(item.durationMin || 30),
-    kind: item.kind || "focus",
-    note: "",
-    status: "planned"
-    })),
-    notes: (parsed.notes || []).map((note) => ({
+    activities: activities.map((item) => normalizeParsedActivity(item, text)),
+    notes: (Array.isArray(parsed) ? [] : (parsed.notes || [])).map((note) => ({
       id: makeId(),
       project: normalizeProject(note.project),
       branch: normalizeBranch(note.branch),
@@ -861,6 +954,24 @@ async function parseWithGemini(text, token) {
       priority: Number(note.priority || 3),
       createdAt: new Date().toISOString()
     }))
+  };
+}
+
+function normalizeParsedActivity(item, originalText) {
+  const recurrence = normalizeRecurrence(item.recurrence) || parseRecurrence(`${item.sourceText || ""} ${item.title || ""} ${originalText || ""}`);
+  const sourceText = item.sourceText || originalText || item.title || "";
+  return {
+    id: makeId(),
+    title: cleanTaskTitle(item.title || sourceText),
+    project: normalizeProject(item.project || projectFromText(sourceText.toLowerCase())),
+    branch: normalizeBranch(item.branch || branchFromText(sourceText.toLowerCase())),
+    date: item.date || (recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+    start: item.start || nextOpenTime(),
+    durationMin: Number(item.durationMin || 30),
+    kind: item.kind || (recurrence ? "routine" : "focus"),
+    recurrence,
+    note: "",
+    status: "planned"
   };
 }
 
@@ -1072,6 +1183,7 @@ function emptyActivity() {
     start: nextOpenTime(),
     durationMin: 30,
     kind: "focus",
+    recurrence: null,
     note: "",
     status: "planned"
   };
@@ -1231,14 +1343,18 @@ function weekKeys() {
   return Array.from({ length: 7 }, (_, index) => addDays(todayKey(), mondayOffset + index));
 }
 
+function dateToKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return dateToKey(new Date());
 }
 
 function addDays(key, amount) {
   const date = new Date(`${key}T00:00:00`);
   date.setDate(date.getDate() + amount);
-  return date.toISOString().slice(0, 10);
+  return dateToKey(date);
 }
 
 function nextOpenTime() {
@@ -1269,13 +1385,84 @@ function inferKind(lower) {
   return "focus";
 }
 
+function parseRecurrence(value) {
+  const lower = String(value || "").toLowerCase().trim();
+  if (!lower) return null;
+  if (/\b(daily|every day|each day)\b/.test(lower)) return { frequency: "daily" };
+  const weekday = lower.match(/\b(every|each|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/);
+  if (weekday) return { frequency: "weekly", byDay: weekdayCode(weekday[2]) };
+  if (/\bweekly\b/.test(lower)) return { frequency: "weekly" };
+  if (/\bmonthly\b/.test(lower)) return { frequency: "monthly" };
+  return null;
+}
+
+function normalizeRecurrence(value) {
+  if (!value) return null;
+  if (typeof value === "string") return parseRecurrence(value);
+  const frequency = String(value.frequency || "").toLowerCase();
+  if (!["daily", "weekly", "monthly"].includes(frequency)) return null;
+  const recurrence = { frequency };
+  if (value.byDay) recurrence.byDay = String(value.byDay).toUpperCase().slice(0, 2);
+  return recurrence;
+}
+
+function recurrenceLabel(recurrence) {
+  if (!recurrence) return "";
+  if (recurrence.frequency === "daily") return "Repeats daily";
+  if (recurrence.frequency === "monthly") return "Repeats monthly";
+  if (recurrence.frequency === "weekly" && recurrence.byDay) return `Repeats ${weekdayName(recurrence.byDay)}`;
+  if (recurrence.frequency === "weekly") return "Repeats weekly";
+  return "";
+}
+
+function recurrenceInputValue(recurrence) {
+  if (!recurrence) return "";
+  if (recurrence.frequency === "weekly" && recurrence.byDay) return `every ${weekdayName(recurrence.byDay)}`;
+  return recurrenceLabel(recurrence).replace(/^Repeats /, "");
+}
+
+function nextDateForRecurrence(recurrence) {
+  if (!recurrence) return todayKey();
+  if (recurrence.frequency === "daily") return todayKey();
+  if (recurrence.frequency === "monthly") return todayKey();
+  if (recurrence.frequency === "weekly" && recurrence.byDay) {
+    const target = weekdayIndex(recurrence.byDay);
+    const now = new Date(`${todayKey()}T00:00:00`);
+    const current = now.getDay();
+    const offset = (target - current + 7) % 7;
+    return addDays(todayKey(), offset);
+  }
+  return todayKey();
+}
+
+function weekdayCode(dayName) {
+  const key = String(dayName || "").slice(0, 3).toLowerCase();
+  return ({ mon: "MO", tue: "TU", wed: "WE", thu: "TH", fri: "FR", sat: "SA", sun: "SU" })[key] || "";
+}
+
+function weekdayName(code) {
+  return ({ MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday", SU: "Sunday" })[String(code || "").toUpperCase()] || "week";
+}
+
+function weekdayIndex(code) {
+  return ({ SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 })[String(code || "").toUpperCase()] || 0;
+}
+
 function cleanTitle(line) {
   return line
-    .replace(/\b(today|tomorrow|tonight|daily|every day)\b/gi, "")
+    .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly)\b/gi, "")
+    .replace(/\b(every|each|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b\d+\s?(m|min|minutes|h|hr|hours)\b/gi, "")
     .replace(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/gi, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled";
+}
+
+function cleanTaskTitle(value) {
+  const cleaned = cleanTitle(String(value || "")
+    .replace(/^(add|create|schedule|make|remind me to|i need to|please|can you)\s+/i, "")
+    .replace(/\b(to my calendar|in my planner|as a task)\b/gi, ""));
+  return titleCase(cleaned.charAt(0).toLowerCase() === cleaned.charAt(0) ? cleaned : cleaned);
 }
 
 function firstUsefulLine(text, fallback) {
