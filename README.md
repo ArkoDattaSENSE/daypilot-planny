@@ -67,3 +67,9 @@ In this sandbox, use the project script instead of the global Firebase binary:
 ```bash
 npm run deploy:firebase
 ```
+
+If `.firebaserc` is not set yet, deploy with:
+
+```bash
+FIREBASE_PROJECT=your-project-id npm run deploy:firebase
+```

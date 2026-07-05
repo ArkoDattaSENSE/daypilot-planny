@@ -9,7 +9,7 @@
     "start": "python3 -m http.server 8000",
     "test": "node scripts/smoke-test.cjs",
     "deploy:github": "git --git-dir=.planny_git --work-tree=. push -u origin main",
-    "deploy:firebase": "FIREBASE_CLI_DISABLE_UPDATE_CHECK=true XDG_CONFIG_HOME=/tmp/firebase-config XDG_CACHE_HOME=/tmp/firebase-cache ./node_modules/.bin/firebase deploy --only firestore:rules,hosting"
+    "deploy:firebase": "node scripts/deploy-firebase.cjs"
   },
   "keywords": [
     "daypilot",
