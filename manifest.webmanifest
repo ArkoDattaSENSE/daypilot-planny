@@ -1,6 +1,6 @@
 {
-  "name": "DayPilot",
-  "short_name": "DayPilot",
+  "name": "Planny",
+  "short_name": "Planny",
   "description": "A chat-first planning assistant for lazy-but-serious work discipline.",
   "start_url": "./today",
   "scope": "./",

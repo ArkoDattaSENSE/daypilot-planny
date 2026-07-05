@@ -115,7 +115,7 @@ export async function ensurePlannyCalendar(token) {
   } while (pageToken);
   const created = await api(token, "POST", "/calendars", {
     summary: calendarName,
-    description: "Created by DayPilot / Planny. Two-way synced with your plan."
+    description: "Created by Planny. Two-way synced with your plan."
   });
   return created.id;
 }

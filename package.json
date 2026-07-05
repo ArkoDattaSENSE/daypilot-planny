@@ -1,9 +1,9 @@
 {
-  "name": "daypilot-planny",
+  "name": "planny",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "DayPilot / Planny static PWA for GitHub Pages with Firebase Spark backend.",
+  "description": "Planny static PWA for GitHub Pages with Firebase Spark backend.",
   "scripts": {
     "build": "node scripts/build-pages.cjs",
     "start": "python3 -m http.server 8000",
@@ -12,7 +12,7 @@
     "deploy:firebase": "node scripts/deploy-firebase.cjs"
   },
   "keywords": [
-    "daypilot",
+    "planny",
     "scheduler",
     "firebase",
     "pwa"

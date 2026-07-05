@@ -123,6 +123,109 @@ label select {
   margin-bottom: 18px;
 }
 
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.mascot-bot {
+  position: relative;
+  width: 46px;
+  height: 50px;
+  flex: 0 0 auto;
+  animation: bot-bob 3.4s ease-in-out infinite;
+}
+
+.bot-antenna {
+  position: absolute;
+  left: 21px;
+  top: 0;
+  width: 4px;
+  height: 11px;
+  border-radius: 999px;
+  background: #64748b;
+}
+
+.bot-antenna::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #38bdf8;
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.16);
+  transform: translateX(-50%);
+}
+
+.bot-face {
+  position: absolute;
+  inset: 11px 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px solid #c7d2fe;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, #eef2ff 100%);
+  box-shadow: 0 8px 18px rgba(79, 70, 229, 0.13);
+}
+
+.bot-face::before,
+.bot-face::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  width: 5px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: bot-blink 5.2s infinite;
+}
+
+.bot-face::before {
+  left: 13px;
+}
+
+.bot-face::after {
+  right: 13px;
+}
+
+.bot-face i {
+  display: none;
+}
+
+.bot-base {
+  position: absolute;
+  left: 15px;
+  bottom: 2px;
+  width: 16px;
+  height: 4px;
+  border-radius: 999px;
+  background: #93c5fd;
+}
+
+@keyframes bot-bob {
+  0%, 100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+  50% {
+    transform: translateY(-4px) rotate(1deg);
+  }
+}
+
+@keyframes bot-blink {
+  0%, 92%, 100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.12);
+  }
+}
+
 .topbar h1 {
   margin: 0;
   font-size: clamp(26px, 4vw, 34px);
@@ -829,6 +932,15 @@ button.active,
     flex-direction: column;
   }
 
+  .brand-lockup {
+    align-items: flex-start;
+  }
+
+  .mascot-bot {
+    width: 42px;
+    height: 46px;
+  }
+
   .topnav,
   .segmented,
   .quick-actions,
@@ -861,5 +973,13 @@ button.active,
 
   .week-view {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot-bot,
+  .bot-face::before,
+  .bot-face::after {
+    animation: none;
   }
 }

@@ -1,6 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DayPilot">
-  <rect width="512" height="512" rx="112" fill="#0f172a"/>
-  <path d="M132 154h128c70 0 120 44 120 102s-50 102-120 102H132V154Z" fill="#eef2ff"/>
-  <path d="M188 220h72c25 0 42 15 42 36s-17 36-42 36h-72v-72Z" fill="#7c3aed"/>
-  <path d="M122 384h268" stroke="#93c5fd" stroke-width="32" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Planny">
+  <rect width="512" height="512" rx="112" fill="#eef2ff"/>
+  <circle cx="256" cy="86" r="18" fill="#38bdf8"/>
+  <path d="M256 104v40" stroke="#64748b" stroke-width="18" stroke-linecap="round"/>
+  <rect x="126" y="142" width="260" height="220" rx="72" fill="#ffffff" stroke="#c7d2fe" stroke-width="20"/>
+  <circle cx="204" cy="246" r="22" fill="#4f46e5"/>
+  <circle cx="308" cy="246" r="22" fill="#4f46e5"/>
+  <path d="M218 304c24 24 52 24 76 0" fill="none" stroke="#93c5fd" stroke-width="20" stroke-linecap="round"/>
+  <path d="M164 386h184" stroke="#93c5fd" stroke-width="28" stroke-linecap="round"/>
 </svg>

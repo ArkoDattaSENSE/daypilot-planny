@@ -330,9 +330,16 @@ function render() {
 function renderHeader() {
   return `
     <header class="topbar">
-      <div>
-        <h1>DayPilot</h1>
-        <p>${state.activities.length ? `${state.activities.length} planned activities` : "A blank slate for the day."}</p>
+      <div class="brand-lockup">
+        <div class="mascot-bot" aria-hidden="true">
+          <span class="bot-antenna"></span>
+          <span class="bot-face"><i></i><i></i></span>
+          <span class="bot-base"></span>
+        </div>
+        <div>
+          <h1>Planny</h1>
+          <p>${state.activities.length ? `${state.activities.length} planned activities` : "A blank slate for the day."}</p>
+        </div>
       </div>
       <nav class="topnav" aria-label="Main navigation">
         <button class="${state.route === "home" ? "active" : ""}" data-route="home">Plan</button>
@@ -780,7 +787,7 @@ function renderSettingsPage() {
             <h3>Daily check-in reminder</h3>
             <p class="muted">${state.settings.checkinEnabled
               ? `On - reminds at ${formatTime(state.settings.checkinTime)}${state.settings.checkinText ? ` ("${escapeHtml(state.settings.checkinText)}")` : ""}, then twice more 10 minutes apart if you have not checked in.`
-              : "A web notification that opens the accountability page. Repeats up to 3 times, 10 minutes apart, until you check in. Works while DayPilot is open in a tab or installed as an app."}</p>
+              : "A web notification that opens the accountability page. Repeats up to 3 times, 10 minutes apart, until you check in. Works while Planny is open in a tab or installed as an app."}</p>
           </div>
         </div>
         <div class="form-grid">
@@ -1322,7 +1329,7 @@ async function handleAction(action) {
   if (action === "test-checkin") {
     const granted = await ensureNotificationPermission();
     if (!granted) return;
-    showWebNotification("DayPilot check-in", "This is how the check-in reminder will look. Tap to open the accountability page.");
+    showWebNotification("Planny check-in", "This is how the check-in reminder will look. Tap to open the accountability page.");
     return;
   }
   if (action === "disable-checkin") {
@@ -2833,7 +2840,7 @@ async function showWebNotification(title, body) {
     body,
     icon: "./assets/icon.svg",
     badge: "./assets/icon.svg",
-    tag: "daypilot-checkin",
+    tag: "planny-checkin",
     renotify: true,
     data: { url: "./checkin" }
   };

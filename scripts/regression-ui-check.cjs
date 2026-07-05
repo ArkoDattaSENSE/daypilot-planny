@@ -47,6 +47,8 @@ ws.on("open", async () => {
   try {
     await send("Runtime.enable");
     await send("Page.enable");
+    await send("Network.enable");
+    await send("Network.setBypassServiceWorker", { bypass: true });
     await evaluate("localStorage.clear()");
     await send("Page.navigate", { url: "http://localhost:8000/" });
     await wait(1000);

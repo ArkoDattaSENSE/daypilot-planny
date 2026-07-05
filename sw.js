@@ -1,4 +1,4 @@
-const cacheName = "daypilot-v6";
+const cacheName = "planny-v7";
 const assets = [
   "./",
   "./index.html",
