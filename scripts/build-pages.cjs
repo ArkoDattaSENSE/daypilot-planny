@@ -12,6 +12,7 @@ const files = [
   "assets/icon.svg",
   "src/app.js",
   "src/firebase.js",
+  "src/gcal.js",
   "today/index.html",
   "dump/index.html",
   "week/index.html",

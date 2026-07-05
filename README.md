@@ -16,6 +16,8 @@ A static, minimal scheduling PWA built from the supplied DayPilot design bundle.
 - Accountability page with work-done and exhaustion tuning.
 - Settings page for Firebase sync and Gemini token setup.
 - Firebase Spark-ready backend: Google Auth plus per-user Firestore state.
+- Google Calendar 2-way sync into a dedicated "Planny" calendar on the same Google account: tasks push as events, and events added or edited in Google Calendar flow back as tasks. Guided click-through setup lives in Settings (enable Calendar API, create an OAuth web client ID in your own Firebase/Google Cloud project, paste it, connect).
+- No shared backend: each user connects their own Firebase project and their own OAuth client. The repo and the deployed app contain no project config.
 - GitHub Pages workflow that publishes only the clean `dist/` artifact.
 
 ## Local

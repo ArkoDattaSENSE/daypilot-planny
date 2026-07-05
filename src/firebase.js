@@ -74,6 +74,8 @@ function sanitizeState(state) {
     projectNotes: state.projectNotes,
     branches: state.branches,
     checkins: state.checkins,
+    calendar: state.calendar,
+    calendarTombstones: state.calendarTombstones,
     lastMessage: state.lastMessage
   }));
 }
