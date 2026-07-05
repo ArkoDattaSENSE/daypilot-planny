@@ -12,7 +12,6 @@ const files = [
   "assets/icon.svg",
   "src/app.js",
   "src/firebase.js",
-  "src/firebase-config.js",
   "today/index.html",
   "dump/index.html",
   "week/index.html",

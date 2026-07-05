@@ -1,4 +1,4 @@
-const cacheName = "daypilot-v1";
+const cacheName = "daypilot-v3";
 const assets = [
   "./",
   "./index.html",
@@ -6,7 +6,6 @@ const assets = [
   "./manifest.webmanifest",
   "./src/app.js",
   "./src/firebase.js",
-  "./src/firebase-config.js",
   "./assets/icon.svg"
 ];
 

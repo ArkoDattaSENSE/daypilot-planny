@@ -1,14 +1,15 @@
 # DayPilot / Planny
 
-A static, chat-first scheduling PWA built from the supplied DayPilot design bundle.
+A static, minimal scheduling PWA built from the supplied DayPilot design bundle.
 
 ## What is included
 
-- Mobile-first Today, Dump, Week, Now, Check-in, and Settings routes.
-- Rule-based no-LLM parser for multi-task dumps.
-- Lazy-mode actions: Done, Snooze, Replan.
-- Permission-gate card for future task moves.
-- Accountability check-in flow.
+- One main planning screen with Day, Week, and Month views.
+- Mood panel at the top of the planner.
+- Chat modal for no-LLM or Gemini-assisted task dumps.
+- Manual task modal for add, edit, delete, and reschedule notes.
+- Accountability page with work-done and exhaustion tuning.
+- Settings page for Firebase sync and Gemini token setup.
 - Firebase Spark-ready backend: Google Auth plus per-user Firestore state.
 - GitHub Pages workflow that publishes only the clean `dist/` artifact.
 
@@ -24,21 +25,7 @@ Open `http://127.0.0.1:8000/`.
 
 ## Setting Firebase Up
 
-Your current Firebase project is:
-
-```text
-labtrack-559e9
-```
-
-Codex has set this in `.firebaserc`, so the normal deploy command is:
-
-```bash
-npm run deploy:firebase
-```
-
-That command builds the clean static artifact into `dist/` and deploys only that folder plus Firestore rules.
-
-The Firebase Web App config for `labtrack` is already wired into `src/firebase-config.js`, so the deployed app can use Firebase Auth and Firestore without pasting JSON into Settings. Settings still lets you override the config locally if needed.
+Keep personal Firebase config out of git. This repo ignores `.firebaserc`, and the app does not commit any Firebase Web App config.
 
 To find a Firebase project ID later:
 
@@ -48,13 +35,31 @@ FIREBASE_CLI_DISABLE_UPDATE_CHECK=true ./node_modules/.bin/firebase projects:lis
 
 The project ID is the value in the `Project ID` column, not the display name or project number.
 
-For a new project, keep it on the free Spark plan and then enable:
+For a new project, keep it on the free Spark plan and then:
 
 1. Create a Firebase project on the Spark plan.
 2. Enable Authentication, then enable the Google provider.
 3. Enable Cloud Firestore.
-4. Deploy `firestore.rules`.
-5. In the app, open Settings and paste the Firebase web app config JSON.
+4. Create a Web App in Firebase project settings.
+5. Copy the Web App config object.
+6. In DayPilot, open Settings and paste the Firebase Web App config JSON.
+7. Deploy `firestore.rules` and Hosting with one of the commands below.
+
+For local deploys, either create an untracked `.firebaserc`:
+
+```bash
+cp .firebaserc.example .firebaserc
+# edit .firebaserc with your project id
+npm run deploy:firebase
+```
+
+or pass the project id once:
+
+```bash
+FIREBASE_PROJECT=your-project-id npm run deploy:firebase
+```
+
+The deploy command builds the clean static artifact into `dist/` and deploys only that folder plus Firestore rules.
 
 The app stores data at:
 

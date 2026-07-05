@@ -1,5 +1,6 @@
 .planny_git/
 .firebase/
+.firebaserc
 dist/
 node_modules/
 firepit-log.txt

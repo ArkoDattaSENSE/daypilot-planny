@@ -64,15 +64,13 @@ export async function saveCloudState(runtime, state) {
 
 function sanitizeState(state) {
   return JSON.parse(JSON.stringify({
-    mode: state.mode,
-    assistant: state.assistant,
+    view: state.view,
+    route: state.route,
     mood: state.mood,
-    dumps: state.dumps,
-    candidates: state.candidates,
-    blocks: state.blocks,
-    notes: state.notes,
+    settings: state.settings,
+    activities: state.activities,
     checkins: state.checkins,
-    proposal: state.proposal
+    lastMessage: state.lastMessage
   }));
 }
 

@@ -7,7 +7,6 @@ const required = [
   "styles.css",
   "src/app.js",
   "src/firebase.js",
-  "src/firebase-config.js",
   "sw.js",
   "manifest.webmanifest",
   "firestore.rules",
@@ -31,14 +30,15 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 if (!html.includes("./src/app.js")) throw new Error("index.html does not load app.js");
 
 const app = fs.readFileSync(path.join(root, "src/app.js"), "utf8");
-for (const route of ["today", "dump", "week", "now", "checkin", "settings"]) {
+for (const route of ["home", "stats", "settings"]) {
   if (!app.includes(`"${route}"`)) throw new Error(`Route ${route} is not registered`);
 }
-for (const phrase of ["Move future task?", "DayPilot Timetable", "Google sign-in", "Multi-add task intake"]) {
+for (const phrase of ["Chat dump", "Firebase is not configured", "Add activity", "Accountability"]) {
   if (!app.includes(phrase)) throw new Error(`Missing UI phrase: ${phrase}`);
 }
-const config = fs.readFileSync(path.join(root, "src/firebase-config.js"), "utf8");
-if (!config.includes("labtrack-559e9")) throw new Error("Default Firebase config is not wired");
+if (fs.existsSync(path.join(root, "src/firebase-config.js"))) {
+  throw new Error("Repo must not include a committed Firebase config");
+}
 
 const rules = fs.readFileSync(path.join(root, "firestore.rules"), "utf8");
 if (!rules.includes("request.auth.uid == userId")) throw new Error("Firestore rules do not enforce per-user access");
