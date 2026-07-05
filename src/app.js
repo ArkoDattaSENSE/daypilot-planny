@@ -1560,6 +1560,16 @@ function activityChanged(before, after) {
 }
 
 function advanceRecurrenceDate(key, recurrence) {
+  if (recurrence && recurrence.frequency === "weekly" && recurrence.byDay) {
+    const days = weekdayCodes(recurrence.byDay);
+    if (days.length > 1) {
+      const current = new Date(`${sanitizeDateKey(key, todayKey())}T00:00:00`).getDay();
+      const offset = Math.min(...days
+        .map((day) => (weekdayIndex(day) - current + 7) % 7)
+        .map((offset) => offset || 7));
+      return addDays(key, offset);
+    }
+  }
   const date = new Date(`${key}T00:00:00`);
   if (recurrence.frequency === "weekly") date.setDate(date.getDate() + 7);
   else if (recurrence.frequency === "monthly") date.setMonth(date.getMonth() + 1);
@@ -1600,7 +1610,7 @@ function applyRecurringEdit(scope) {
 }
 
 function applyRescheduleRequest(text) {
-  const lines = String(text || "").split(/\n|;/).map((line) => line.trim()).filter(Boolean);
+  const lines = splitInputLines(text);
   const requests = lines.map(parseRescheduleLine).filter(Boolean);
   if (!requests.length) return { handled: false, changed: false, message: "" };
   const messages = [];
@@ -1632,6 +1642,13 @@ function applyRescheduleRequest(text) {
     changed: changed > 0,
     message: messages.join(" ")
   };
+}
+
+function splitInputLines(text) {
+  return String(text || "")
+    .split(/\n|;|\.(?=\s+[A-Z0-9#]|$)/)
+    .map((line) => line.replace(/^[-*\d.)\s]+(?=[a-zA-Z#])/, "").trim())
+    .filter(Boolean);
 }
 
 function parseRescheduleLine(line) {
@@ -1746,7 +1763,7 @@ function isLockedActivity(activity) {
 }
 
 function parseNoLlm(text) {
-  const lines = text.split(/\n|;/).map((line) => line.replace(/^[-*\d.)\s]+(?=[a-zA-Z#])/, "").trim()).filter(Boolean);
+  const lines = splitInputLines(text);
   const parsed = { activities: [], notes: [] };
   lines.forEach((line) => {
     const lower = line.toLowerCase();
@@ -1837,7 +1854,7 @@ function dateForWeekday(name, forceNextWeek) {
   const target = weekdayIndex(weekdayCode(name));
   const now = new Date(`${todayKey()}T00:00:00`);
   let offset = (target - now.getDay() + 7) % 7;
-  if (forceNextWeek) offset += offset === 0 ? 7 : (offset < 7 ? 7 : 0);
+  if (forceNextWeek && offset === 0) offset = 7;
   return addDays(todayKey(), offset);
 }
 
@@ -1931,13 +1948,17 @@ For each activity:
 - start: HH:MM 24-hour time, or empty.
 - durationMin: number.
 - kind: focus/admin/routine/personal.
-- recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"}. For "every Wednesday", use {"frequency":"weekly","byDay":"WE"}.
+- recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"} OR {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}.
+- For "every Wednesday", use {"frequency":"weekly","byDay":"WE"}.
+- For "weekdays", use {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}.
+- For "weekends", use {"frequency":"weekly","byDay":["SA","SU"]}.
 - locked: true for meetings/classes/appointments/exams/seminars/calls or anything the user says is fixed/immovable. false for flexible work.
 
 Hard date rules:
 - Today is ${todayKey()} (${weekdayName(weekdayCodeForDate(todayKey()))}).
-- If recurrence.byDay is set, date MUST be the next occurrence of that exact weekday. A Wednesday recurrence can NEVER have a Thursday date.
+- If recurrence.byDay is set, date MUST be the next occurrence of one of those exact weekdays. A Wednesday recurrence can NEVER have a Thursday date. A weekday recurrence can only be Monday-Friday.
 - "On Wednesdays I have meeting X" means a weekly Wednesday fixed meeting: recurrence {"frequency":"weekly","byDay":"WE"}, locked true, and date equal to the next Wednesday.
+- "I wake up at 7:00 am on weekdays" means a weekday routine: recurrence {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}, date equal to the next weekday, start "07:00".
 - "on Wednesday" singular means one event on the upcoming Wednesday unless the user also says every/each/weekly/Wednesdays.
 - If an item is fixed/locked, never move it to solve a conflict.
 
@@ -1994,8 +2015,10 @@ function extractJsonBlock(raw) {
 
 function normalizeParsedActivity(item, originalText) {
   if (!item || typeof item !== "object") return null;
-  const recurrence = normalizeRecurrence(item.recurrence) || parseRecurrence(`${item.sourceText || ""} ${item.title || ""} ${originalText || ""}`);
   const sourceText = item.sourceText || originalText || item.title || "";
+  const originalLines = splitInputLines(originalText);
+  const recurrenceSource = item.sourceText || (originalLines.length <= 1 ? originalText : "") || item.title || "";
+  const recurrence = normalizeRecurrence(item.recurrence) || parseRecurrence(`${recurrenceSource} ${item.title || ""}`);
   const date = alignDateToRecurrence(
     sanitizeDateKey(item.date, recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
     recurrence
@@ -2670,6 +2693,12 @@ function parseRecurrence(value) {
   const lower = String(value || "").toLowerCase().trim();
   if (!lower) return null;
   if (/\b(daily|every day|each day)\b/.test(lower)) return { frequency: "daily" };
+  if (/\b(weekdays|workdays|working days|every weekday|each weekday|monday\s+(to|through|-)\s+friday)\b/.test(lower)) {
+    return { frequency: "weekly", byDay: ["MO", "TU", "WE", "TH", "FR"] };
+  }
+  if (/\b(weekends|every weekend|each weekend|on weekends|saturday\s+(and|&|\+)\s+sunday)\b/.test(lower)) {
+    return { frequency: "weekly", byDay: ["SA", "SU"] };
+  }
   const weekday = lower.match(/\b(every|each)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/);
   if (weekday) return { frequency: "weekly", byDay: weekdayCode(weekday[2]) };
   const onPluralWeekday = lower.match(/\bon\s+(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/);
@@ -2689,7 +2718,9 @@ function normalizeRecurrence(value) {
   const frequency = String(value.frequency || "").toLowerCase();
   if (!["daily", "weekly", "monthly"].includes(frequency)) return null;
   const recurrence = { frequency };
-  if (value.byDay) recurrence.byDay = String(value.byDay).toUpperCase().slice(0, 2);
+  const days = weekdayCodes(value.byDay);
+  if (days.length === 1) recurrence.byDay = days[0];
+  else if (days.length > 1) recurrence.byDay = days;
   return recurrence;
 }
 
@@ -2701,21 +2732,32 @@ function alignDateToRecurrence(dateKey, recurrence) {
 
 function dateMatchesRecurrence(dateKey, recurrence) {
   if (!recurrence || recurrence.frequency !== "weekly" || !recurrence.byDay) return true;
-  return weekdayCodeForDate(dateKey) === String(recurrence.byDay || "").toUpperCase();
+  const days = weekdayCodes(recurrence.byDay);
+  return days.length ? days.includes(weekdayCodeForDate(dateKey)) : true;
 }
 
 function recurrenceLabel(recurrence) {
   if (!recurrence) return "";
   if (recurrence.frequency === "daily") return "Repeats daily";
   if (recurrence.frequency === "monthly") return "Repeats monthly";
-  if (recurrence.frequency === "weekly" && recurrence.byDay) return `Repeats ${weekdayName(recurrence.byDay)}`;
+  if (recurrence.frequency === "weekly" && recurrence.byDay) {
+    const days = weekdayCodes(recurrence.byDay);
+    if (isWeekdaySet(days)) return "Repeats weekdays";
+    if (isWeekendSet(days)) return "Repeats weekends";
+    if (days.length) return `Repeats ${weekdayNames(days)}`;
+  }
   if (recurrence.frequency === "weekly") return "Repeats weekly";
   return "";
 }
 
 function recurrenceInputValue(recurrence) {
   if (!recurrence) return "";
-  if (recurrence.frequency === "weekly" && recurrence.byDay) return `every ${weekdayName(recurrence.byDay)}`;
+  if (recurrence.frequency === "weekly" && recurrence.byDay) {
+    const days = weekdayCodes(recurrence.byDay);
+    if (isWeekdaySet(days)) return "weekdays";
+    if (isWeekendSet(days)) return "weekends";
+    if (days.length) return `every ${weekdayNames(days)}`;
+  }
   return recurrenceLabel(recurrence).replace(/^Repeats /, "");
 }
 
@@ -2724,18 +2766,33 @@ function nextDateForRecurrence(recurrence) {
   if (recurrence.frequency === "daily") return todayKey();
   if (recurrence.frequency === "monthly") return todayKey();
   if (recurrence.frequency === "weekly" && recurrence.byDay) {
-    const target = weekdayIndex(recurrence.byDay);
+    const days = weekdayCodes(recurrence.byDay);
+    if (!days.length) return todayKey();
     const now = new Date(`${todayKey()}T00:00:00`);
     const current = now.getDay();
-    const offset = (target - current + 7) % 7;
+    const offset = Math.min(...days.map((day) => (weekdayIndex(day) - current + 7) % 7));
     return addDays(todayKey(), offset);
   }
   return todayKey();
 }
 
+const weekdayOrder = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+const weekdaySet = ["MO", "TU", "WE", "TH", "FR"];
+const weekendSet = ["SA", "SU"];
+
 function weekdayCode(dayName) {
   const key = String(dayName || "").slice(0, 3).toLowerCase();
   return ({ mon: "MO", tue: "TU", wed: "WE", thu: "TH", fri: "FR", sat: "SA", sun: "SU" })[key] || "";
+}
+
+function weekdayCodes(value) {
+  if (!value) return [];
+  const raw = Array.isArray(value) ? value : String(value).split(",");
+  const codes = raw.map((item) => {
+    const text = String(item || "").trim();
+    return weekdayOrder.includes(text.toUpperCase()) ? text.toUpperCase() : weekdayCode(text);
+  }).filter((code) => weekdayOrder.includes(code));
+  return weekdayOrder.filter((code) => codes.includes(code));
 }
 
 function weekdayCodeForDate(dateKey) {
@@ -2747,19 +2804,35 @@ function weekdayName(code) {
   return ({ MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday", FR: "Friday", SA: "Saturday", SU: "Sunday" })[String(code || "").toUpperCase()] || "week";
 }
 
+function weekdayNames(codes) {
+  return weekdayCodes(codes).map(weekdayName).join(", ");
+}
+
+function isWeekdaySet(codes) {
+  const days = weekdayCodes(codes);
+  return days.length === weekdaySet.length && weekdaySet.every((day) => days.includes(day));
+}
+
+function isWeekendSet(codes) {
+  const days = weekdayCodes(codes);
+  return days.length === weekendSet.length && weekendSet.every((day) => days.includes(day));
+}
+
 function weekdayIndex(code) {
   return ({ SU: 0, MO: 1, TU: 2, WE: 3, TH: 4, FR: 5, SA: 6 })[String(code || "").toUpperCase()] || 0;
 }
 
 function cleanTitle(line) {
   return line
-    .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly|next week)\b/gi, "")
+    .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly|next week|weekdays?|workdays?|working days?|weekends?)\b/gi, "")
     .replace(/\b(every|each|on|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b\d+(?:\.\d+)?\s?(m|min|minutes|h|hr|hours)\b/gi, "")
     .replace(/\b([01]?\d|2[0-3]):[0-5]\d\s*(am|pm)?\b/gi, "")
     .replace(/\b\d{1,2}\s*(am|pm)\b/gi, "")
     .replace(/\bat\s+\d{1,2}\b/gi, "")
+    .replace(/\b(on|at)\s*(?=$)/gi, "")
+    .replace(/\b(on|at)\s+(on|at)\b/gi, "$2")
     .replace(/#\w+(?::[\w-]+)?/g, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled";
@@ -2769,7 +2842,11 @@ function cleanTaskTitle(value) {
   const cleaned = cleanTitle(String(value || "")
     .replace(/^(add|create|schedule|make|remind me to|i need to|i have|there is|please|can you)\s+/i, "")
     .replace(/\b(to my calendar|in my planner|as a task)\b/gi, ""));
-  const trimmed = cleaned.replace(/^(i have|there is)\s+/i, "");
+  const trimmed = cleaned
+    .replace(/^i\s+(wake|get)\s+up\b/i, "Wake up")
+    .replace(/^(i have|there is)\s+/i, "")
+    .replace(/\b(on|at)\s*$/i, "")
+    .trim();
   return titleCase(trimmed.charAt(0).toLowerCase() === trimmed.charAt(0) ? trimmed : trimmed);
 }
 

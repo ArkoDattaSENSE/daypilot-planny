@@ -28,11 +28,30 @@ function wait(ms) {
 }
 
 async function evaluate(expression) {
-  return send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  const result = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+  if (result.exceptionDetails) {
+    const detail = result.exceptionDetails.exception && result.exceptionDetails.exception.description
+      ? result.exceptionDetails.exception.description
+      : result.exceptionDetails.text;
+    throw new Error(detail || "Browser evaluation failed");
+  }
+  return result;
+}
+
+async function waitForExpression(expression, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const result = await evaluate(expression);
+    if (result.result.value) return true;
+    await wait(100);
+  }
+  throw new Error(`Timed out waiting for: ${expression}`);
 }
 
 async function submitChat(text) {
+  await waitForExpression("Boolean(document.querySelector('[data-open-modal=\"chat\"]'))");
   await evaluate("document.querySelector('[data-open-modal=\"chat\"]').click()");
+  await waitForExpression("Boolean(document.querySelector('[data-chat-input]'))");
   await wait(200);
   await evaluate(`
     const input = document.querySelector('[data-chat-input]');
@@ -43,6 +62,15 @@ async function submitChat(text) {
   await wait(600);
 }
 
+function dayCode(dateKey) {
+  return ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][new Date(`${dateKey}T00:00:00`).getDay()];
+}
+
+function byDayArray(recurrence) {
+  if (!recurrence || !recurrence.byDay) return [];
+  return Array.isArray(recurrence.byDay) ? recurrence.byDay : String(recurrence.byDay).split(",");
+}
+
 ws.on("open", async () => {
   try {
     await send("Runtime.enable");
@@ -51,7 +79,38 @@ ws.on("open", async () => {
     await send("Network.setBypassServiceWorker", { bypass: true });
     await evaluate("localStorage.clear()");
     await send("Page.navigate", { url: "http://localhost:8000/" });
-    await wait(1000);
+    await waitForExpression("Boolean(document.querySelector('[data-open-modal=\"chat\"]'))");
+    await submitChat("I wake up on 7:00 am on weekdays. On Saturdays I wake up at 9:00 am");
+    const routineParsed = await evaluate(`
+      JSON.stringify(JSON.parse(localStorage.getItem('daypilot-state-v2')).activities.map((a) => ({
+        title: a.title,
+        date: a.date,
+        start: a.start,
+        recurrence: a.recurrence,
+        locked: a.locked
+      })))
+    `);
+    const routines = JSON.parse(routineParsed.result.value);
+    const weekdayWake = routines.find((item) => item.start === "07:00");
+    const saturdayWake = routines.find((item) => item.start === "09:00");
+    if (!weekdayWake) throw new Error(`Weekday wake-up routine missing: ${JSON.stringify(routines)}`);
+    if (!saturdayWake) throw new Error(`Saturday wake-up routine missing: ${JSON.stringify(routines)}`);
+    const weekdayDays = byDayArray(weekdayWake.recurrence);
+    const saturdayDays = byDayArray(saturdayWake.recurrence);
+    if (weekdayWake.title !== "Wake up") throw new Error(`Expected clean wake-up title, got ${weekdayWake.title}`);
+    if (JSON.stringify(weekdayDays) !== JSON.stringify(["MO", "TU", "WE", "TH", "FR"])) {
+      throw new Error(`Expected weekday recurrence, got ${JSON.stringify(weekdayWake.recurrence)}`);
+    }
+    if (!weekdayDays.includes(dayCode(weekdayWake.date))) throw new Error(`Weekday routine landed on ${weekdayWake.date}`);
+    if (saturdayWake.title !== "Wake up") throw new Error(`Expected clean Saturday wake-up title, got ${saturdayWake.title}`);
+    if (JSON.stringify(saturdayDays) !== JSON.stringify(["SA"])) {
+      throw new Error(`Expected Saturday recurrence, got ${JSON.stringify(saturdayWake.recurrence)}`);
+    }
+    if (dayCode(saturdayWake.date) !== "SA") throw new Error(`Saturday routine landed on ${saturdayWake.date}`);
+
+    await evaluate("localStorage.clear()");
+    await send("Page.reload", { ignoreCache: true });
+    await wait(700);
     await submitChat("On wednesdays I have meeting xxx 9am 30m");
     const parsed = await evaluate(`
       JSON.stringify(JSON.parse(localStorage.getItem('daypilot-state-v2')).activities.map((a) => ({
@@ -114,7 +173,7 @@ ws.on("open", async () => {
     if (byId["locked-meeting"].start !== "10:00") throw new Error("Fixed meeting moved during reschedule");
     if (byId["write-intro"].start !== "11:00") throw new Error(`Flexible target did not move after fixed meeting: ${byId["write-intro"].start}`);
     if (byId["email-update"].start !== "12:00") throw new Error(`Flexible neighbor did not shift after target: ${byId["email-update"].start}`);
-    console.log(JSON.stringify({ parsed: activity, rescheduled: moved }));
+    console.log(JSON.stringify({ routines, parsed: activity, rescheduled: moved }));
     ws.close();
   } catch (error) {
     console.error(error);

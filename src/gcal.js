@@ -141,10 +141,30 @@ function toLocalStamp(dateObj) {
   return `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())}T${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:00`;
 }
 
+const weekdayOrder = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"];
+
+function weekdayCode(dayName) {
+  const key = String(dayName || "").slice(0, 3).toLowerCase();
+  return ({ mon: "MO", tue: "TU", wed: "WE", thu: "TH", fri: "FR", sat: "SA", sun: "SU" })[key] || "";
+}
+
+function weekdayCodes(value) {
+  if (!value) return [];
+  const raw = Array.isArray(value) ? value : String(value).split(",");
+  const codes = raw.map((item) => {
+    const text = String(item || "").trim();
+    return weekdayOrder.includes(text.toUpperCase()) ? text.toUpperCase() : weekdayCode(text);
+  }).filter((code) => weekdayOrder.includes(code));
+  return weekdayOrder.filter((code) => codes.includes(code));
+}
+
 function recurrenceRule(recurrence) {
   if (!recurrence) return undefined;
   if (recurrence.frequency === "daily") return ["RRULE:FREQ=DAILY"];
-  if (recurrence.frequency === "weekly" && recurrence.byDay) return [`RRULE:FREQ=WEEKLY;BYDAY=${recurrence.byDay}`];
+  if (recurrence.frequency === "weekly" && recurrence.byDay) {
+    const days = weekdayCodes(recurrence.byDay);
+    if (days.length) return [`RRULE:FREQ=WEEKLY;BYDAY=${days.join(",")}`];
+  }
   if (recurrence.frequency === "weekly") return ["RRULE:FREQ=WEEKLY"];
   if (recurrence.frequency === "monthly") return ["RRULE:FREQ=MONTHLY"];
   return undefined;
@@ -154,8 +174,12 @@ export function parseEventRecurrence(rules) {
   const rule = Array.isArray(rules) ? rules.find((item) => item.startsWith("RRULE:")) : null;
   if (!rule) return null;
   if (/FREQ=DAILY/.test(rule)) return { frequency: "daily" };
-  const byDay = rule.match(/BYDAY=([A-Z]{2})/);
-  if (/FREQ=WEEKLY/.test(rule)) return byDay ? { frequency: "weekly", byDay: byDay[1] } : { frequency: "weekly" };
+  const byDay = rule.match(/BYDAY=([A-Z]{2}(?:,[A-Z]{2})*)/);
+  if (/FREQ=WEEKLY/.test(rule)) {
+    if (!byDay) return { frequency: "weekly" };
+    const days = weekdayCodes(byDay[1]);
+    return { frequency: "weekly", byDay: days.length === 1 ? days[0] : days };
+  }
   if (/FREQ=MONTHLY/.test(rule)) return { frequency: "monthly" };
   return null;
 }
