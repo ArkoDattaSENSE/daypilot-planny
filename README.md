@@ -7,7 +7,9 @@ A static, minimal scheduling PWA built from the supplied DayPilot design bundle.
 - One main planning screen with Day, Week, and Month views.
 - Mood panel at the top of the planner.
 - Chat modal for no-LLM or Gemini-assisted task dumps.
-- Manual task modal for add, edit, delete, and reschedule notes.
+- Manual task modal for add, edit, delete, task notes, and note-driven rescheduling.
+- Compact project notes board with pinned context, decisions, blockers, meeting notes, task seeds, and future ideas.
+- Lightweight project branches with boost, pause, plan-next-week, and next-action controls.
 - Accountability page with work-done and exhaustion tuning.
 - Settings page for Firebase sync and Gemini token setup.
 - Firebase Spark-ready backend: Google Auth plus per-user Firestore state.

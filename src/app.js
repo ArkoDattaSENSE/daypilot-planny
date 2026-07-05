@@ -17,7 +17,10 @@ const blankState = {
     workDone: 0,
     exhaustion: 20
   },
+  selectedProject: "Inbox",
   activities: [],
+  projectNotes: [],
+  branches: [],
   checkins: {},
   chatDraft: "",
   activeModal: null,
@@ -58,6 +61,9 @@ function normalizeState(input) {
   next.mood = { ...base.mood, ...(input && input.mood ? input.mood : {}) };
   next.settings = { ...base.settings, ...(input && input.settings ? input.settings : {}) };
   next.activities = Array.isArray(next.activities) ? next.activities : [];
+  next.projectNotes = Array.isArray(next.projectNotes) ? next.projectNotes : [];
+  next.branches = Array.isArray(next.branches) ? next.branches : [];
+  next.selectedProject = next.selectedProject || firstProject(next) || "Inbox";
   next.checkins = next.checkins && typeof next.checkins === "object" ? next.checkins : {};
   return next;
 }
@@ -141,6 +147,7 @@ function renderHomePage() {
         </div>
         ${renderActivityView()}
       </section>
+      ${renderProjectPanel()}
     </section>
   `;
 }
@@ -252,10 +259,93 @@ function renderActivityList(items, className) {
         <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${activity.id}">
           <span>${formatTime(activity.start)}</span>
           <strong>${escapeHtml(activity.title)}</strong>
-          <em>${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}</em>
+          <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}</em>
         </button>
       `).join("")}
     </div>
+  `;
+}
+
+function renderProjectPanel() {
+  const projects = projectNames();
+  const selected = projects.includes(state.selectedProject) ? state.selectedProject : projects[0];
+  const notes = state.projectNotes.filter((note) => note.project === selected);
+  const branches = state.branches.filter((branch) => branch.project === selected);
+  return `
+    <section class="project-panel">
+      <div class="project-head">
+        <div>
+          <h2>Projects & notes</h2>
+          <p>Thinking board, not a database.</p>
+        </div>
+        <label>
+          Project
+          <select data-project-select>
+            ${projects.map((project) => `<option value="${escapeAttr(project)}" ${selected === project ? "selected" : ""}>${escapeHtml(project)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+      <div class="project-grid">
+        <section>
+          <h3>Notes board</h3>
+          <form class="note-form" data-form="project-note">
+            <select name="section" aria-label="Note section">
+              ${noteSections().map((section) => `<option value="${section}">${sectionLabel(section)}</option>`).join("")}
+            </select>
+            <textarea name="text" placeholder="decision: use calibration as optional contribution&#10;blocked: waiting for reply"></textarea>
+            <div class="button-row">
+              <button class="primary" type="submit">Save note</button>
+              <button type="button" data-action="note-to-task">Turn latest into task</button>
+            </div>
+          </form>
+          <div class="notes-board">
+            ${noteSections().map((section) => renderNoteSection(section, notes)).join("")}
+          </div>
+        </section>
+        <section>
+          <h3>Branches</h3>
+          <form class="branch-form" data-form="branch">
+            <input name="name" placeholder="Paper submission, calibration extension...">
+            <button class="primary" type="submit">Add branch</button>
+          </form>
+          <div class="branch-list">
+            ${branches.length ? branches.map(renderBranch).join("") : `<p class="muted">No branches yet. Tasks can still use Main.</p>`}
+          </div>
+        </section>
+      </div>
+    </section>
+  `;
+}
+
+function renderNoteSection(section, notes) {
+  const sectionNotes = notes.filter((note) => note.section === section);
+  return `
+    <section class="note-section">
+      <h4>${sectionLabel(section)}</h4>
+      ${sectionNotes.length ? sectionNotes.map((note) => `
+        <article class="note-card">
+          <p>${escapeHtml(note.text)}</p>
+          <span>${escapeHtml(note.branch || "Main")} - ${note.priority || 3}/5</span>
+        </article>
+      `).join("") : `<p class="muted">Empty.</p>`}
+    </section>
+  `;
+}
+
+function renderBranch(branch) {
+  return `
+    <article class="branch-card">
+      <div>
+        <strong>${escapeHtml(branch.name)}</strong>
+        <span>${escapeHtml(branch.status)} - priority ${branch.priority}</span>
+      </div>
+      <div class="branch-actions">
+        <button data-branch-action="boost" data-branch-id="${branch.id}">Boost</button>
+        <button data-branch-action="pause" data-branch-id="${branch.id}">Pause</button>
+        <button data-branch-action="plan" data-branch-id="${branch.id}">Plan next week</button>
+        <button data-branch-action="next" data-branch-id="${branch.id}">Next action</button>
+      </div>
+    </article>
   `;
 }
 
@@ -398,6 +488,10 @@ function renderTaskModal() {
         <form data-form="task">
           <label>Title <input name="title" required value="${escapeAttr(activity.title)}"></label>
           <div class="form-grid">
+            <label>Project <input name="project" value="${escapeAttr(activity.project || state.selectedProject || "Inbox")}"></label>
+            <label>Branch <input name="branch" value="${escapeAttr(activity.branch || "Main")}"></label>
+          </div>
+          <div class="form-grid">
             <label>Date <input type="date" name="date" value="${escapeAttr(activity.date)}"></label>
             <label>Start <input type="time" name="start" value="${escapeAttr(activity.start)}"></label>
             <label>Minutes <input type="number" min="5" step="5" name="durationMin" value="${activity.durationMin}"></label>
@@ -407,9 +501,11 @@ function renderTaskModal() {
               </select>
             </label>
           </div>
-          <label>Reschedule prompt or note <textarea name="note" placeholder="Move this after lunch, make it lighter, split into 25m...">${escapeHtml(activity.note || "")}</textarea></label>
+          <label>Task notes <textarea name="note" placeholder="Needs fresh brain. Blocked until reply. For next time start from table...">${escapeHtml(activity.note || "")}</textarea></label>
+          ${editing ? `<div class="signal-box">${renderNoteSignals(activity.note || "")}</div>` : ""}
           <div class="button-row">
             <button class="primary" type="submit">${editing ? "Save changes" : "Add task"}</button>
+            ${editing ? `<button type="button" data-action="task-note-subtask">Turn note into subtask</button><button type="button" data-action="task-note-project">Save as project note</button><button type="button" data-action="task-note-replan">Use note to replan</button>` : ""}
             ${editing ? `<button class="danger" type="button" data-action="delete-activity">Delete</button>` : ""}
             <button type="button" data-close-modal="true">Cancel</button>
           </div>
@@ -496,6 +592,24 @@ function bindEvents() {
     });
   });
 
+  const projectSelect = document.querySelector("[data-project-select]");
+  if (projectSelect) {
+    projectSelect.addEventListener("change", () => {
+      state.selectedProject = projectSelect.value;
+      persist();
+      render();
+    });
+  }
+
+  const noteForm = document.querySelector("[data-form='project-note']");
+  if (noteForm) noteForm.addEventListener("submit", submitProjectNote);
+  const branchForm = document.querySelector("[data-form='branch']");
+  if (branchForm) branchForm.addEventListener("submit", submitBranch);
+
+  document.querySelectorAll("[data-branch-action]").forEach((button) => {
+    button.addEventListener("click", () => handleBranchAction(button.dataset.branchAction, button.dataset.branchId));
+  });
+
   document.querySelectorAll("[data-action]").forEach((button) => {
     button.addEventListener("click", () => handleAction(button.dataset.action));
   });
@@ -554,6 +668,21 @@ async function handleAction(action) {
     persist();
     render();
   }
+  if (action === "task-note-subtask") {
+    createSubtaskFromEditingNote();
+    return;
+  }
+  if (action === "task-note-project") {
+    saveEditingNoteToProject();
+    return;
+  }
+  if (action === "task-note-replan") {
+    applyEditingNoteSignals();
+    return;
+  }
+  if (action === "note-to-task") {
+    createTaskFromLatestProjectNote();
+  }
 }
 
 async function submitChat() {
@@ -566,15 +695,18 @@ async function submitChat() {
     toast("Add a Gemini token first.");
     return;
   }
-  let activities = [];
+  let parsed = { activities: [], notes: [] };
   if (mode === "gemini") {
-    activities = await parseWithGemini(text, token).catch(() => parseNoLlm(text));
+    parsed = await parseWithGemini(text, token).catch(() => parseNoLlm(text));
   } else {
-    activities = parseNoLlm(text);
+    parsed = parseNoLlm(text);
   }
-  state.activities = [...state.activities, ...activities];
+  state.activities = [...state.activities, ...parsed.activities];
+  state.projectNotes = [...state.projectNotes, ...parsed.notes];
+  ensureBranchesForActivities(parsed.activities);
+  ensureBranchesForNotes(parsed.notes);
   state.activeModal = null;
-  state.lastMessage = `${activities.length} item${activities.length === 1 ? "" : "s"} added from chat.`;
+  state.lastMessage = `${parsed.activities.length} task${parsed.activities.length === 1 ? "" : "s"} and ${parsed.notes.length} note${parsed.notes.length === 1 ? "" : "s"} added from chat.`;
   persist();
   render();
 }
@@ -585,6 +717,8 @@ function submitTaskForm(event) {
   const activity = {
     id: state.editingId || makeId(),
     title: form.get("title").trim(),
+    project: normalizeProject(form.get("project")),
+    branch: normalizeBranch(form.get("branch")),
     date: form.get("date") || todayKey(),
     start: form.get("start") || "09:00",
     durationMin: Number(form.get("durationMin") || 30),
@@ -592,6 +726,7 @@ function submitTaskForm(event) {
     note: form.get("note").trim(),
     status: (getEditingActivity() && getEditingActivity().status) || "planned"
   };
+  ensureBranch(activity.project, activity.branch);
   if (state.editingId) {
     state.activities = state.activities.map((item) => item.id === state.editingId ? activity : item);
     state.lastMessage = "Activity updated.";
@@ -607,27 +742,47 @@ function submitTaskForm(event) {
 
 function parseNoLlm(text) {
   const lines = text.split(/\n|;/).map((line) => line.replace(/^[-*\d.)\s]+/, "").trim()).filter(Boolean);
-  return lines.map((line) => {
+  const parsed = { activities: [], notes: [] };
+  lines.forEach((line) => {
     const lower = line.toLowerCase();
+    const project = projectFromText(lower);
+    const branch = branchFromText(lower);
+    if (isNoteLine(lower)) {
+      parsed.notes.push({
+        id: makeId(),
+        project,
+        branch,
+        section: inferNoteSection(lower),
+        text: cleanNoteText(line),
+        priority: inferNotePriority(lower),
+        createdAt: new Date().toISOString()
+      });
+      ensureBranch(project, branch);
+      return;
+    }
     const duration = lower.match(/(\d+)\s?(m|min|minutes|h|hr|hours)/);
     const time = lower.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/);
     const durationMin = duration ? Number(duration[1]) * (duration[2].startsWith("h") ? 60 : 1) : 30;
     const date = lower.includes("tomorrow") ? addDays(todayKey(), 1) : todayKey();
-    return {
+    parsed.activities.push({
       id: makeId(),
       title: cleanTitle(line),
+      project,
+      branch,
       date,
       start: time ? normalizeTime(time) : nextOpenTime(),
       durationMin,
       kind: inferKind(lower),
       note: "",
       status: "planned"
-    };
+    });
+    ensureBranch(project, branch);
   });
+  return parsed;
 }
 
 async function parseWithGemini(text, token) {
-  const prompt = `Return only JSON array of activities. Each item must have title, date YYYY-MM-DD or empty, start HH:MM or empty, durationMin number, kind one of focus/admin/routine/personal. Text: ${text}`;
+  const prompt = `Return only JSON with shape {"activities":[],"notes":[]}. Activities need title, project, branch, date YYYY-MM-DD or empty, start HH:MM or empty, durationMin number, kind one of focus/admin/routine/personal. Notes need project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5. Text: ${text}`;
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(token)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -637,16 +792,30 @@ async function parseWithGemini(text, token) {
   const data = await response.json();
   const raw = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0].text;
   const json = raw.replace(/```json|```/g, "").trim();
-  return JSON.parse(json).map((item) => ({
+  const parsed = JSON.parse(json);
+  return {
+    activities: (parsed.activities || []).map((item) => ({
     id: makeId(),
     title: item.title || "Untitled",
+    project: normalizeProject(item.project),
+    branch: normalizeBranch(item.branch),
     date: item.date || todayKey(),
     start: item.start || nextOpenTime(),
     durationMin: Number(item.durationMin || 30),
     kind: item.kind || "focus",
     note: "",
     status: "planned"
-  }));
+    })),
+    notes: (parsed.notes || []).map((note) => ({
+      id: makeId(),
+      project: normalizeProject(note.project),
+      branch: normalizeBranch(note.branch),
+      section: noteSections().includes(note.section) ? note.section : "task_seeds",
+      text: note.text || "",
+      priority: Number(note.priority || 3),
+      createdAt: new Date().toISOString()
+    }))
+  };
 }
 
 function saveFirebaseConfig() {
@@ -677,9 +846,182 @@ function readFirebaseConfig() {
   }
 }
 
+function submitProjectNote(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const text = form.get("text").trim();
+  if (!text) return;
+  const section = form.get("section") || inferNoteSection(text.toLowerCase());
+  state.projectNotes.unshift({
+    id: makeId(),
+    project: state.selectedProject || "Inbox",
+    branch: "Main",
+    section,
+    text,
+    priority: inferNotePriority(text.toLowerCase()),
+    createdAt: new Date().toISOString()
+  });
+  state.lastMessage = "Project note saved.";
+  persist();
+  render();
+}
+
+function submitBranch(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const name = normalizeBranch(form.get("name"));
+  ensureBranch(state.selectedProject || "Inbox", name);
+  state.lastMessage = `${name} branch added.`;
+  persist();
+  render();
+}
+
+function handleBranchAction(action, id) {
+  const branch = state.branches.find((item) => item.id === id);
+  if (!branch) return;
+  if (action === "boost") {
+    branch.priority = Math.min(5, Number(branch.priority || 3) + 1);
+    branch.status = "active";
+    state.lastMessage = `${branch.name} boosted. Flexible work will favor it.`;
+  }
+  if (action === "pause") {
+    branch.status = branch.status === "paused" ? "active" : "paused";
+    state.lastMessage = `${branch.name} is now ${branch.status}.`;
+  }
+  if (action === "plan") {
+    state.activities.push({
+      id: makeId(),
+      title: `Plan ${branch.name}`,
+      project: branch.project,
+      branch: branch.name,
+      date: addDays(todayKey(), 7),
+      start: "09:00",
+      durationMin: 45,
+      kind: "focus",
+      note: "Plan next week from branch notes.",
+      status: "planned"
+    });
+    state.lastMessage = `Next week planning block created for ${branch.name}.`;
+  }
+  if (action === "next") {
+    state.activities.push({
+      id: makeId(),
+      title: `Next action for ${branch.name}`,
+      project: branch.project,
+      branch: branch.name,
+      date: todayKey(),
+      start: nextOpenTime(),
+      durationMin: 30,
+      kind: "focus",
+      note: "Created from branch next-action control.",
+      status: "planned"
+    });
+    state.lastMessage = `Next action created for ${branch.name}.`;
+  }
+  persist();
+  render();
+}
+
+function createSubtaskFromEditingNote() {
+  const activity = getEditingActivity();
+  if (!activity || !activity.note) return;
+  state.activities.push({
+    id: makeId(),
+    title: firstUsefulLine(activity.note, `Follow up: ${activity.title}`),
+    project: activity.project || "Inbox",
+    branch: activity.branch || "Main",
+    date: activity.date || todayKey(),
+    start: nextOpenTime(),
+    durationMin: 30,
+    kind: activity.kind || "focus",
+    note: `From note on ${activity.title}`,
+    status: "planned"
+  });
+  state.lastMessage = "Subtask created from note.";
+  state.activeModal = null;
+  state.editingId = null;
+  persist();
+  render();
+}
+
+function saveEditingNoteToProject() {
+  const activity = getEditingActivity();
+  if (!activity || !activity.note) return;
+  state.projectNotes.unshift({
+    id: makeId(),
+    project: activity.project || "Inbox",
+    branch: activity.branch || "Main",
+    section: inferNoteSection(activity.note.toLowerCase()),
+    text: activity.note,
+    priority: inferNotePriority(activity.note.toLowerCase()),
+    linkedActivityId: activity.id,
+    createdAt: new Date().toISOString()
+  });
+  state.selectedProject = activity.project || "Inbox";
+  state.lastMessage = "Task note saved to project board.";
+  state.activeModal = null;
+  state.editingId = null;
+  persist();
+  render();
+}
+
+function applyEditingNoteSignals() {
+  const activity = getEditingActivity();
+  if (!activity || !activity.note) return;
+  const note = activity.note.toLowerCase();
+  const changes = {};
+  if (/fresh brain|quiet brain|deep|morning/.test(note)) {
+    changes.start = "09:00";
+    changes.kind = "focus";
+  }
+  if (/low energy|tired|can do tired|light/.test(note)) {
+    changes.start = "14:00";
+    changes.kind = "admin";
+  }
+  if (/blocked|waiting|until .* replies|reply/.test(note)) {
+    changes.status = "blocked";
+  }
+  if (/deadline.*tomorrow|tomorrow.*deadline|due tomorrow/.test(note)) {
+    changes.date = addDays(todayKey(), 1);
+    changes.start = "09:00";
+  }
+  updateActivity(activity.id, changes);
+  state.lastMessage = Object.keys(changes).length ? "Note signals applied to the schedule." : "No strong scheduling signal found in note.";
+  state.activeModal = null;
+  state.editingId = null;
+  persist();
+  render();
+}
+
+function createTaskFromLatestProjectNote() {
+  const notes = state.projectNotes.filter((note) => note.project === state.selectedProject);
+  if (!notes.length) {
+    toast("No project note to turn into a task.");
+    return;
+  }
+  const note = notes[0];
+  state.activities.push({
+    id: makeId(),
+    title: firstUsefulLine(note.text, `Follow up ${note.project}`),
+    project: note.project,
+    branch: note.branch || "Main",
+    date: todayKey(),
+    start: nextOpenTime(),
+    durationMin: 30,
+    kind: note.section === "blocked_by" ? "admin" : "focus",
+    note: note.text,
+    status: "planned"
+  });
+  state.lastMessage = "Task created from latest project note.";
+  persist();
+  render();
+}
+
 function emptyActivity() {
   return {
     title: "",
+    project: state.selectedProject || "Inbox",
+    branch: "Main",
     date: todayKey(),
     start: nextOpenTime(),
     durationMin: 30,
@@ -697,6 +1039,46 @@ function updateActivity(id, changes) {
   state.activities = state.activities.map((activity) => activity.id === id ? { ...activity, ...changes } : activity);
 }
 
+function projectNames() {
+  const names = new Set(["Inbox"]);
+  state.activities.forEach((activity) => names.add(activity.project || "Inbox"));
+  state.projectNotes.forEach((note) => names.add(note.project || "Inbox"));
+  state.branches.forEach((branch) => names.add(branch.project || "Inbox"));
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
+function firstProject(input) {
+  const projects = new Set();
+  (input.activities || []).forEach((activity) => projects.add(activity.project || "Inbox"));
+  (input.projectNotes || []).forEach((note) => projects.add(note.project || "Inbox"));
+  return Array.from(projects)[0] || "Inbox";
+}
+
+function ensureBranchesForActivities(activities) {
+  activities.forEach((activity) => ensureBranch(activity.project || "Inbox", activity.branch || "Main"));
+}
+
+function ensureBranchesForNotes(notes) {
+  notes.forEach((note) => ensureBranch(note.project || "Inbox", note.branch || "Main"));
+}
+
+function ensureBranch(project, name) {
+  const branchProject = normalizeProject(project);
+  const branchName = normalizeBranch(name);
+  const exists = state.branches.some((branch) => branch.project === branchProject && branch.name === branchName);
+  if (!exists) {
+    state.branches.push({
+      id: makeId(),
+      project: branchProject,
+      name: branchName,
+      status: "active",
+      priority: 3,
+      goal: "",
+      createdAt: new Date().toISOString()
+    });
+  }
+}
+
 function sortedActivities() {
   return [...state.activities].sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`));
 }
@@ -707,6 +1089,93 @@ function groupByDate(items) {
     groups[item.date].push(item);
     return groups;
   }, {});
+}
+
+function noteSections() {
+  return ["pinned_context", "open_decisions", "future_ideas", "blocked_by", "meeting_notes", "task_seeds", "someday_not_now"];
+}
+
+function sectionLabel(section) {
+  return ({
+    pinned_context: "Pinned context",
+    open_decisions: "Open decisions",
+    future_ideas: "Future ideas",
+    blocked_by: "Blocked by",
+    meeting_notes: "Meeting notes",
+    task_seeds: "Task seeds",
+    someday_not_now: "Someday / not now"
+  })[section] || section;
+}
+
+function renderNoteSignals(text) {
+  const signals = detectNoteSignals(text);
+  if (!signals.length) return `<p class="muted">Signals detected from note: none yet.</p>`;
+  return `<p class="muted">Signals detected from note: ${signals.map(escapeHtml).join(", ")}</p>`;
+}
+
+function detectNoteSignals(text) {
+  const lower = String(text || "").toLowerCase();
+  const signals = [];
+  if (/fresh brain|quiet brain|deep|morning/.test(lower)) signals.push("prefer morning focus");
+  if (/low energy|tired|can do tired|light/.test(lower)) signals.push("can move to light slot");
+  if (/blocked|waiting|reply/.test(lower)) signals.push("blocked/follow-up");
+  if (/deadline|due/.test(lower)) signals.push("deadline signal");
+  if (/next week|next monday|future|for next/.test(lower)) signals.push("planning pointer");
+  return signals;
+}
+
+function isNoteLine(lower) {
+  return /^(note|remember|idea|blocked|decision|meeting|someday|for next time):/.test(lower) || /#note|#project-note|#future|#blocked|#waiting/.test(lower);
+}
+
+function inferNoteSection(lower) {
+  if (/blocked|waiting|reply|#blocked|#waiting/.test(lower)) return "blocked_by";
+  if (/decision/.test(lower)) return "open_decisions";
+  if (/meeting|advisor|call/.test(lower)) return "meeting_notes";
+  if (/idea|future|for next|next week/.test(lower)) return "future_ideas";
+  if (/someday|not now|later/.test(lower)) return "someday_not_now";
+  if (/context|remember|note/.test(lower)) return "pinned_context";
+  return "task_seeds";
+}
+
+function cleanNoteText(line) {
+  return line.replace(/^(note|remember|idea|blocked|decision|meeting|someday|for next time):\s*/i, "").trim();
+}
+
+function inferNotePriority(lower) {
+  if (/urgent|deadline|high|#priority:high|tomorrow/.test(lower)) return 5;
+  if (/low|someday|not now/.test(lower)) return 2;
+  return 3;
+}
+
+function normalizeProject(value) {
+  const text = String(value || "").trim();
+  return text || "Inbox";
+}
+
+function normalizeBranch(value) {
+  const text = String(value || "").trim();
+  return text || "Main";
+}
+
+function projectFromText(lower) {
+  const tag = lower.match(/#project:([a-z0-9_-]+)/i);
+  if (tag) return titleCase(tag[1].replace(/[-_]/g, " "));
+  if (lower.includes("kgp")) return "KGP";
+  if (lower.includes("ruok") || lower.includes("bathroom")) return "RUOK";
+  if (lower.includes("iaso") || lower.includes("leantopo")) return "IASO";
+  if (lower.includes("gesture")) return "Gesture";
+  if (lower.includes("admin") || lower.includes("mail")) return "Admin";
+  return state.selectedProject || "Inbox";
+}
+
+function branchFromText(lower) {
+  const tag = lower.match(/#branch:([a-z0-9_-]+)/i);
+  if (tag) return titleCase(tag[1].replace(/[-_]/g, " "));
+  if (lower.includes("calibration")) return "Calibration";
+  if (lower.includes("submission") || lower.includes("paper")) return "Paper submission";
+  if (lower.includes("dataset")) return "Dataset";
+  return "Main";
 }
 
 function weekKeys() {
@@ -761,6 +1230,12 @@ function cleanTitle(line) {
     .replace(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/gi, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled";
+}
+
+function firstUsefulLine(text, fallback) {
+  const line = String(text || "").split(/\n/).map((item) => item.trim()).find(Boolean);
+  if (!line) return fallback;
+  return cleanTitle(line).slice(0, 80) || fallback;
 }
 
 function formatDay(key) {

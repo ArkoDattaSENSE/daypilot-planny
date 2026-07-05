@@ -68,7 +68,10 @@ function sanitizeState(state) {
     route: state.route,
     mood: state.mood,
     settings: state.settings,
+    selectedProject: state.selectedProject,
     activities: state.activities,
+    projectNotes: state.projectNotes,
+    branches: state.branches,
     checkins: state.checkins,
     lastMessage: state.lastMessage
   }));

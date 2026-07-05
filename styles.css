@@ -194,8 +194,108 @@ button.active,
 }
 
 .planner-panel,
-.settings-card {
+.settings-card,
+.project-panel {
   padding: 20px;
+}
+
+.project-panel {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.project-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 16px;
+  align-items: end;
+  margin-bottom: 18px;
+}
+
+.project-head h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(280px, 0.8fr);
+  gap: 16px;
+}
+
+.note-form,
+.branch-form {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.branch-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.notes-board {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.note-section,
+.branch-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.note-section h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.note-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.note-card p {
+  margin: 0;
+}
+
+.note-card span,
+.branch-card span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.branch-list {
+  display: grid;
+  gap: 10px;
+}
+
+.branch-card strong {
+  display: block;
+}
+
+.branch-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.signal-box {
+  padding: 12px;
+  border: 1px solid #c7d2fe;
+  border-radius: 12px;
+  background: #eef2ff;
 }
 
 .planner-head {
@@ -461,7 +561,11 @@ button.active,
   .sync-banner,
   .metric-grid,
   .month-view,
-  .form-grid {
+  .form-grid,
+  .project-head,
+  .project-grid,
+  .notes-board,
+  .branch-form {
     grid-template-columns: 1fr;
   }
 
