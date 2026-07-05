@@ -59,6 +59,14 @@ const blankState = {
 let state = loadState();
 let firebaseRuntime = null;
 let authNotice = "";
+let calendarSyncStatus = {
+  busy: false,
+  phase: "",
+  current: 0,
+  total: 0,
+  summary: "",
+  failed: 0
+};
 
 boot();
 
@@ -362,13 +370,14 @@ function renderHomePage() {
             ${["day", "week", "month"].map((view) => `<button class="${state.view === view ? "active" : ""}" data-view="${view}">${titleCase(view)}</button>`).join("")}
           </div>
           <div class="quick-actions">
-            ${calendarReady() ? `<button class="icon-button" data-action="sync-gcal" aria-label="Sync Google Calendar">Sync</button>` : ""}
+            ${calendarReady() ? `<button class="icon-button" data-action="sync-gcal" aria-label="Sync Google Calendar" ${calendarSyncStatus.busy ? "disabled" : ""}>${calendarSyncStatus.busy ? "Syncing" : "Sync"}</button>` : ""}
             <button class="icon-button primary" data-open-modal="chat" aria-label="Open chat dump">Chat</button>
             <button class="icon-button" data-open-modal="task" aria-label="Add task">+</button>
           </div>
         </div>
         ${renderActivityView()}
       </section>
+      ${renderCalendarSyncPanel()}
       ${renderProjectPanel()}
     </section>
   `;
@@ -420,6 +429,42 @@ function renderFirebaseBanner() {
       <strong>Firebase is not configured.</strong>
       <span>No cloud sync, no cross-device restore, no account backup, and no synced settings yet.</span>
       <button data-route="settings">Set up</button>
+    </section>
+  `;
+}
+
+function renderCalendarSyncPanel() {
+  const hasClient = Boolean(getCalendarClientId());
+  const ready = calendarReady();
+  if (!hasClient && !calendarSyncStatus.summary) return "";
+  const lastSync = state.calendar.lastSync ? new Date(state.calendar.lastSync).toLocaleString() : "";
+  const progress = calendarSyncStatus.total
+    ? Math.max(4, Math.min(100, Math.round((calendarSyncStatus.current / calendarSyncStatus.total) * 100)))
+    : 0;
+  const tone = calendarSyncStatus.busy ? "active" : calendarSyncStatus.failed ? "warn" : ready ? "good" : "warn";
+  const title = calendarSyncStatus.busy
+    ? "Google Calendar sync is running"
+    : ready
+      ? "Google Calendar sync ready"
+      : "Google Calendar setup not finished";
+  const summary = calendarSyncStatus.busy
+    ? calendarSyncStatus.phase || "Checking calendar changes..."
+    : calendarSyncStatus.summary || (ready
+      ? (lastSync ? `Last checked ${lastSync}.` : "Ready to sync your Planny calendar.")
+      : "Save a client ID, then connect to create or find your Planny calendar.");
+  return `
+    <section class="calendar-sync-panel ${tone}" aria-live="polite">
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(summary)}</span>
+        ${lastSync && !calendarSyncStatus.busy ? `<em>Last full sync: ${escapeHtml(lastSync)}</em>` : ""}
+      </div>
+      ${calendarSyncStatus.busy ? `
+        <div class="sync-meter" aria-label="Calendar sync progress">
+          <span style="width: ${progress}%"></span>
+        </div>
+      ` : ""}
+      <button data-action="${ready ? "sync-gcal" : "connect-gcal"}" ${calendarSyncStatus.busy || !hasClient ? "disabled" : ""}>${ready ? "Sync now" : "Connect"}</button>
     </section>
   `;
 }
@@ -738,7 +783,7 @@ function renderSettingsPage() {
           <div>
             <h3>Google Calendar (2-way sync)</h3>
             <p class="muted">${calendarReady()
-              ? `Linked to a calendar named "Planny".${state.calendar.lastSync ? ` Last sync ${new Date(state.calendar.lastSync).toLocaleString()}.` : ""}`
+              ? `Linked to a calendar named "Planny".${state.calendar.lastSync ? ` Last full sync ${new Date(state.calendar.lastSync).toLocaleString()}.` : ""}${calendarSyncStatus.summary ? ` ${escapeHtml(calendarSyncStatus.summary)}` : ""}`
               : "Tasks push into a dedicated \"Planny\" calendar, and events you add or edit there flow back here. Uses the same Google account you sync with."}</p>
           </div>
           <a class="external-link" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noreferrer">Open Google Cloud credentials</a>
@@ -765,8 +810,8 @@ function renderSettingsPage() {
         <input data-config="gcal-client" value="${escapeAttr(getCalendarClientId())}" placeholder="1234567890-abc123.apps.googleusercontent.com">
         <div class="button-row">
           <button class="primary" data-action="save-gcal-client">Save client ID</button>
-          <button data-action="connect-gcal">${calendarReady() ? "Reconnect" : "Connect & create Planny calendar"}</button>
-          ${calendarReady() ? `<button data-action="sync-gcal">Sync now</button><button data-action="disconnect-gcal">Disconnect</button>` : ""}
+          <button data-action="connect-gcal" ${calendarSyncStatus.busy ? "disabled" : ""}>${calendarReady() ? "Reconnect" : "Connect & create Planny calendar"}</button>
+          ${calendarReady() ? `<button data-action="sync-gcal" ${calendarSyncStatus.busy ? "disabled" : ""}>${calendarSyncStatus.busy ? "Syncing..." : "Sync now"}</button><button data-action="disconnect-gcal" ${calendarSyncStatus.busy ? "disabled" : ""}>Disconnect</button>` : ""}
         </div>
       </section>
       <section class="settings-card">
@@ -2320,117 +2365,208 @@ function calendarReady() {
   return Boolean(getCalendarClientId() && state.calendar.calendarId);
 }
 
+function setCalendarSyncStatus(patch, repaint = true) {
+  calendarSyncStatus = { ...calendarSyncStatus, ...patch };
+  if (repaint) render();
+}
+
+function calendarSyncSummary({ checked, pushed, pulled, removed, deleted, failed }) {
+  const changes = [];
+  if (pushed) changes.push(`${pushed} pushed`);
+  if (pulled) changes.push(`${pulled} pulled`);
+  if (removed) changes.push(`${removed} removed`);
+  if (deleted) changes.push(`${deleted} deleted`);
+  const prefix = `Calendar checked ${checked} item${checked === 1 ? "" : "s"}`;
+  const changeText = changes.length ? changes.join(", ") : "no changes needed";
+  return failed
+    ? `${prefix}: ${changeText}; ${failed} item${failed === 1 ? "" : "s"} need retry.`
+    : `${prefix}: ${changeText}.`;
+}
+
+function missingCalendarEvent(error) {
+  return /HTTP 404|HTTP 410|not found|gone/i.test(error && error.message ? error.message : "");
+}
+
 async function syncCalendarNow(interactive) {
   if (!getCalendarClientId()) {
     toast("Set up Google Calendar in Settings first.");
     return;
   }
-  if (syncCalendarNow.busy) return;
+  if (syncCalendarNow.busy) {
+    if (interactive) toast("Calendar sync is already running.");
+    return;
+  }
   syncCalendarNow.busy = true;
-  if (interactive) toast("Syncing with Google Calendar...");
+  const plannedTotal = Math.max(1, state.activities.length + state.calendarTombstones.length);
+  setCalendarSyncStatus({
+    busy: true,
+    phase: "Connecting to Google Calendar...",
+    current: 0,
+    total: plannedTotal,
+    failed: 0,
+    summary: ""
+  });
+  if (interactive) toast("Checking Google Calendar...");
   try {
     const token = await requestCalendarToken(interactive);
     let calendarId = state.calendar.calendarId;
     if (!calendarId) {
+      setCalendarSyncStatus({ phase: "Finding or creating your Planny calendar..." });
       calendarId = await ensurePlannyCalendar(token);
       state.calendar.calendarId = calendarId;
       persist();
     }
-    for (const eventId of state.calendarTombstones) {
-      await deleteEvent(token, calendarId, eventId);
-    }
-    state.calendarTombstones = [];
-    const events = await listEvents(token, calendarId, state.calendar.lastSync || "");
+    let checked = 0;
+    let pushed = 0;
     let pulled = 0;
     let removed = 0;
-    events.forEach((event) => {
-      const priv = (event.extendedProperties && event.extendedProperties.private) || {};
-      const existing = state.activities.find((activity) => activity.gcalEventId === event.id || (priv.plannyId && activity.id === priv.plannyId));
-      if (event.status === "cancelled") {
-        if (existing) {
-          state.activities = state.activities.filter((activity) => activity !== existing);
-          removed += 1;
-        }
-        return;
-      }
-      const fields = eventToActivityFields(event);
-      fields.locked = priv.plannyLocked === "true"
-        ? true
-        : priv.plannyLocked === "false"
-          ? false
-          : !priv.plannyId || inferLockedActivity(fields);
-      if (!fields.date) return;
-      const eventUpdated = event.updated || new Date().toISOString();
-      if (existing) {
-        if (eventUpdated > (existing.gcalSyncedAt || "")) {
-          const merged = sanitizeActivity({ ...existing, ...fields, id: existing.id });
-          if (merged) {
-            merged.gcalEventId = event.id;
-            merged.gcalSyncedAt = eventUpdated;
-            merged.updatedAt = eventUpdated;
-            state.activities = state.activities.map((activity) => activity.id === existing.id ? merged : activity);
-            pulled += 1;
-          }
-        }
-        return;
-      }
-      const activity = sanitizeActivity({
-        id: priv.plannyId || makeId(),
-        title: fields.title,
-        note: fields.note,
-        date: fields.date,
-        start: fields.start,
-        durationMin: fields.durationMin,
-        recurrence: fields.recurrence,
-        locked: fields.locked || !priv.plannyId,
-        project: priv.plannyProject || "Calendar",
-        branch: priv.plannyBranch || "Main",
-        kind: priv.plannyKind,
-        status: "planned"
-      });
-      if (activity) {
-        activity.gcalEventId = event.id;
-        activity.gcalSyncedAt = eventUpdated;
-        activity.updatedAt = eventUpdated;
-        state.activities.push(activity);
-        ensureBranch(activity.project, activity.branch);
-        pulled += 1;
-      }
-    });
-    let pushed = 0;
-    for (const activity of state.activities) {
-      if (!activity.gcalEventId) {
-        if (activity.gcalInstanceOf) {
-          // Exception to a recurring series: patch that single instance, don't create a duplicate.
-          const instance = await findInstance(token, calendarId, activity.gcalInstanceOf, activity.date);
-          if (instance) {
-            const event = await patchEvent(token, calendarId, instance.id, activity);
-            activity.gcalEventId = instance.id;
-            activity.gcalSyncedAt = (event && event.updated) || new Date().toISOString();
-            pushed += 1;
-            continue;
-          }
-          delete activity.gcalInstanceOf;
-        }
-        const event = await insertEvent(token, calendarId, activity);
-        activity.gcalEventId = event.id;
-        activity.gcalSyncedAt = event.updated || new Date().toISOString();
-        pushed += 1;
-      } else if ((activity.updatedAt || "") > (activity.gcalSyncedAt || "")) {
-        const event = await patchEvent(token, calendarId, activity.gcalEventId, activity);
-        activity.gcalSyncedAt = (event && event.updated) || new Date().toISOString();
-        pushed += 1;
+    let deleted = 0;
+    let failed = 0;
+    const errors = [];
+    for (const eventId of state.calendarTombstones) {
+      checked += 1;
+      setCalendarSyncStatus({ phase: `Deleting old Calendar links (${checked}/${calendarSyncStatus.total})...`, current: checked });
+      try {
+        await deleteEvent(token, calendarId, eventId);
+        deleted += 1;
+      } catch (error) {
+        failed += 1;
+        errors.push(error.message);
       }
     }
-    state.calendar.lastSync = new Date().toISOString();
-    announce(`Calendar synced: ${pushed} pushed, ${pulled} pulled${removed ? `, ${removed} removed` : ""}.`);
+    if (!failed) state.calendarTombstones = [];
+    setCalendarSyncStatus({ phase: "Reading Google Calendar changes..." });
+    const events = await listEvents(token, calendarId, state.calendar.lastSync || "");
+    const total = Math.max(1, checked + events.length + state.activities.length);
+    setCalendarSyncStatus({ total, current: checked });
+    events.forEach((event) => {
+      checked += 1;
+      setCalendarSyncStatus({ phase: `Checking Calendar event ${checked}/${total}...`, current: checked }, false);
+      try {
+        const priv = (event.extendedProperties && event.extendedProperties.private) || {};
+        const existing = state.activities.find((activity) => activity.gcalEventId === event.id || (priv.plannyId && activity.id === priv.plannyId));
+        if (event.status === "cancelled") {
+          if (existing) {
+            state.activities = state.activities.filter((activity) => activity !== existing);
+            removed += 1;
+          }
+          return;
+        }
+        const fields = eventToActivityFields(event);
+        fields.locked = priv.plannyLocked === "true"
+          ? true
+          : priv.plannyLocked === "false"
+            ? false
+            : !priv.plannyId || inferLockedActivity(fields);
+        if (!fields.date) return;
+        const eventUpdated = event.updated || new Date().toISOString();
+        if (existing) {
+          if (eventUpdated > (existing.gcalSyncedAt || "")) {
+            const merged = sanitizeActivity({ ...existing, ...fields, id: existing.id });
+            if (merged) {
+              merged.gcalEventId = event.id;
+              merged.gcalSyncedAt = eventUpdated;
+              merged.updatedAt = eventUpdated;
+              state.activities = state.activities.map((activity) => activity.id === existing.id ? merged : activity);
+              pulled += 1;
+            }
+          }
+          return;
+        }
+        const activity = sanitizeActivity({
+          id: priv.plannyId || makeId(),
+          title: fields.title,
+          note: fields.note,
+          date: fields.date,
+          start: fields.start,
+          durationMin: fields.durationMin,
+          recurrence: fields.recurrence,
+          locked: fields.locked || !priv.plannyId,
+          project: priv.plannyProject || "Calendar",
+          branch: priv.plannyBranch || "Main",
+          kind: priv.plannyKind,
+          status: "planned"
+        });
+        if (activity) {
+          activity.gcalEventId = event.id;
+          activity.gcalSyncedAt = eventUpdated;
+          activity.updatedAt = eventUpdated;
+          state.activities.push(activity);
+          ensureBranch(activity.project, activity.branch);
+          pulled += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        errors.push(error.message);
+      }
+    });
+    for (const activity of state.activities) {
+      checked += 1;
+      setCalendarSyncStatus({ phase: `Syncing Planny task ${checked}/${total}...`, current: checked });
+      try {
+        if (!activity.gcalEventId) {
+          if (activity.gcalInstanceOf) {
+            // Exception to a recurring series: patch that single instance, don't create a duplicate.
+            const instance = await findInstance(token, calendarId, activity.gcalInstanceOf, activity.date);
+            if (instance) {
+              const event = await patchEvent(token, calendarId, instance.id, activity);
+              activity.gcalEventId = instance.id;
+              activity.gcalSyncedAt = (event && event.updated) || new Date().toISOString();
+              pushed += 1;
+              continue;
+            }
+            delete activity.gcalInstanceOf;
+          }
+          const event = await insertEvent(token, calendarId, activity);
+          activity.gcalEventId = event.id;
+          activity.gcalSyncedAt = event.updated || new Date().toISOString();
+          pushed += 1;
+        } else if ((activity.updatedAt || "") > (activity.gcalSyncedAt || "")) {
+          let event;
+          try {
+            event = await patchEvent(token, calendarId, activity.gcalEventId, activity);
+          } catch (error) {
+            if (!missingCalendarEvent(error)) throw error;
+            delete activity.gcalEventId;
+            event = await insertEvent(token, calendarId, activity);
+            activity.gcalEventId = event.id;
+          }
+          activity.gcalSyncedAt = (event && event.updated) || new Date().toISOString();
+          pushed += 1;
+        }
+      } catch (error) {
+        failed += 1;
+        errors.push(`${activity.title}: ${error.message}`);
+      }
+    }
+    if (!failed) state.calendar.lastSync = new Date().toISOString();
+    const summary = calendarSyncSummary({ checked, pushed, pulled, removed, deleted, failed });
+    state.lastMessage = summary;
+    persist();
+    setCalendarSyncStatus({
+      busy: false,
+      phase: "",
+      current: total,
+      total,
+      failed,
+      summary: errors.length ? `${summary} ${errors.slice(0, 2).join(" ")}` : summary
+    });
+    if (interactive) toast(summary);
   } catch (error) {
     console.warn("Calendar sync failed", error);
     persist();
-    render();
+    setCalendarSyncStatus({
+      busy: false,
+      phase: "",
+      current: 0,
+      total: 0,
+      failed: 1,
+      summary: `Calendar sync stopped: ${error.message}`
+    });
     toast(error.message);
   } finally {
     syncCalendarNow.busy = false;
+    if (calendarSyncStatus.busy) setCalendarSyncStatus({ busy: false });
   }
 }
 
@@ -2625,7 +2761,7 @@ function parseTimeFromText(lower) {
   if (/\bmorning\b/.test(lower)) return sanitizeTime(state.profile && state.profile.peakStart, "") || "09:00";
   if (/\bafternoon\b/.test(lower)) return "14:00";
   if (/\bevening\b/.test(lower)) return "18:00";
-  if (/\btonight\b/.test(lower)) return "20:00";
+  if (/\btonight\b|\bnight\b/.test(lower)) return "20:00";
   return null;
 }
 
@@ -2637,8 +2773,8 @@ function composeTime(hourText, minuteText, suffix) {
 }
 
 function inferKind(lower) {
-  if (/meeting|standup|seminar|class|lecture|exam|appointment|interview/.test(lower)) return "routine";
-  if (/walk|workout|sleep|call/.test(lower)) return "personal";
+  if (/meeting|standup|seminar|class|lecture|exam|appointment|interview|doctor|dentist|flight|train/.test(lower)) return "routine";
+  if (/walk|workout|sleep|call|grocery|groceries|family|health/.test(lower)) return "personal";
   if (/mail|send|admin|upload|print/.test(lower)) return "admin";
   if (/daily|every|routine/.test(lower)) return "routine";
   return "focus";
@@ -2648,7 +2784,7 @@ function inferLockedActivity(item) {
   const text = `${item && item.title ? item.title : ""} ${item && item.note ? item.note : ""} ${item && item.sourceText ? item.sourceText : ""}`.toLowerCase();
   if (/\b(flexible|movable|can move|reschedulable)\b/.test(text)) return false;
   if (/\b(fixed|immovable|do not move|don't move|cannot move|can't move|hard commitment)\b/.test(text)) return true;
-  if (/\b(meeting|standup|sync|class|lecture|seminar|exam|appointment|interview|defen[cs]e|doctor|dentist)\b/.test(text)) return true;
+  if (/\b(meeting|standup|sync|class|lecture|seminar|exam|appointment|interview|defen[cs]e|doctor|dentist|call|flight|train)\b/.test(text)) return true;
   const kind = item && item.kind ? String(item.kind).toLowerCase() : "";
   return kind === "routine" && /\b(call|meeting|class|lecture|seminar)\b/.test(text);
 }
@@ -2664,6 +2800,9 @@ function parseRecurrence(value) {
     return { frequency: "weekly", byDay: ["SA", "SU"] };
   }
   const listedDays = weekdayCodesFromText(lower);
+  if (listedDays.length && /\b(weekly|recurring|routine)\b/.test(lower)) {
+    return { frequency: "weekly", byDay: listedDays.length === 1 ? listedDays[0] : listedDays };
+  }
   if (listedDays.length > 1 && /\b(every|each|weekly|recurring|routine|on)\b/.test(lower)) {
     return { frequency: "weekly", byDay: listedDays };
   }

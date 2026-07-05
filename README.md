@@ -160,7 +160,7 @@ npm run deploy:github    # push main → GitHub Actions deploys dist/ to Pages
 npm run deploy:firebase  # deploys dist/ + firestore.rules to your Firebase project
 ```
 
-The Gemini suite is intentionally mean: weekdays/weekends, multi-day routines, one-off dates, fixed events, flexible work, notes, projects, branches, productive slots, reschedule commands, and ambiguous requests. The live variant uses your local environment token only; the repo still contains no Gemini key.
+The Gemini suite is intentionally mean: weekdays/weekends, multi-day routines, one-off dates, fixed events, flexible work, notes, projects, branches, productive slots, reschedule commands, and ambiguous requests. The live variant uses your local environment token only; the repo still contains no Gemini key. To inspect a smaller live slice during quota trouble, use `npm run test:gemini:live -- --from=10 --limit=8`.
 
 For Firebase deploys, either `cp .firebaserc.example .firebaserc` and edit in your project ID, or run `FIREBASE_PROJECT=your-project-id npm run deploy:firebase`. This workspace keeps its usable git repository at `.planny_git` (the `.git` placeholder is read-only), so git commands take the form `git --git-dir=.planny_git --work-tree=. <cmd>`.
 

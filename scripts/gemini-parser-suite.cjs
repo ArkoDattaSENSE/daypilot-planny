@@ -6,6 +6,10 @@ const offline = args.has("--offline") || !live;
 const token = process.env.GEMINI_API_KEY || process.env.PLANNY_GEMINI_KEY || "";
 const today = process.env.PLANNY_TEST_TODAY || "2026-07-05";
 const weekday = "Sunday";
+const fromArg = process.argv.find((arg) => arg.startsWith("--from="));
+const limitArg = process.argv.find((arg) => arg.startsWith("--limit="));
+const fromIndex = fromArg ? Math.max(0, Number(fromArg.split("=")[1]) || 0) : 0;
+const limitCount = limitArg ? Math.max(1, Number(limitArg.split("=")[1]) || 1) : Infinity;
 
 const profileBlock = `
 About this user (use it - this is why they trust you):
@@ -385,7 +389,30 @@ function validateCase(testCase, parsed) {
   return failures;
 }
 
-function postJson(url, payload) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableGeminiError(error) {
+  return /Gemini HTTP (500|502|503|504)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN/i.test(error && error.message ? error.message : "");
+}
+
+async function postJson(url, payload, options = {}) {
+  const attempts = options.attempts || 4;
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await postJsonOnce(url, payload);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts || !isRetryableGeminiError(error)) break;
+      await wait(Math.min(8000, 750 * (2 ** (attempt - 1))));
+    }
+  }
+  throw lastError;
+}
+
+function postJsonOnce(url, payload) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(payload);
     const request = https.request(url, {
@@ -420,7 +447,8 @@ async function runLive() {
   if (!token) throw new Error("Set GEMINI_API_KEY or PLANNY_GEMINI_KEY to run the live Gemini suite.");
   const { buildGeminiPrompt, extractGeminiJsonBlock, geminiModel } = await import("../src/gemini-parser.js");
   const failures = [];
-  for (const testCase of cases) {
+  const selectedCases = cases.slice(fromIndex, Number.isFinite(limitCount) ? fromIndex + limitCount : undefined);
+  for (const [offset, testCase] of selectedCases.entries()) {
     const prompt = buildGeminiPrompt({
       text: testCase.text,
       today,
@@ -428,28 +456,37 @@ async function runLive() {
       profileBlock,
       allowQuestion: testCase.expect && testCase.expect.question
     });
-    const data = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${encodeURIComponent(token)}`, {
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { responseMimeType: "application/json" }
-    });
+    let data;
+    try {
+      data = await postJson(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${encodeURIComponent(token)}`, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { responseMimeType: "application/json" }
+      }, { attempts: 5 });
+    } catch (error) {
+      failures.push({ id: testCase.id, index: fromIndex + offset, failures: [error.message] });
+      process.stdout.write("E");
+      if (/Gemini HTTP 429/.test(error.message)) break;
+      continue;
+    }
     const raw = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
     let parsed;
     try {
       parsed = JSON.parse(extractGeminiJsonBlock(raw || ""));
     } catch (error) {
-      failures.push({ id: testCase.id, failures: [`invalid JSON: ${error.message}`], raw });
+      failures.push({ id: testCase.id, index: fromIndex + offset, failures: [`invalid JSON: ${error.message}`], raw });
       continue;
     }
     const testFailures = validateCase(testCase, parsed);
-    if (testFailures.length) failures.push({ id: testCase.id, failures: testFailures, parsed });
+    if (testFailures.length) failures.push({ id: testCase.id, index: fromIndex + offset, failures: testFailures, parsed });
     process.stdout.write(testFailures.length ? "F" : ".");
+    await wait(350);
   }
   process.stdout.write("\n");
   if (failures.length) {
     console.error(JSON.stringify(failures, null, 2));
-    throw new Error(`${failures.length}/${cases.length} Gemini parser cases failed.`);
+    throw new Error(`${failures.length}/${selectedCases.length} Gemini parser cases failed for selected range.`);
   }
-  console.log(`Live Gemini parser suite passed: ${cases.length} adversarial cases.`);
+  console.log(`Live Gemini parser suite passed: ${selectedCases.length} adversarial cases.`);
 }
 
 async function runOffline() {

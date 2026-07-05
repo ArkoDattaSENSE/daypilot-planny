@@ -1,6 +1,7 @@
 export const geminiModel = "gemini-2.5-flash";
 
 export function buildGeminiPrompt({ text, today, weekday, profileBlock = "", allowQuestion = true }) {
+  const guide = weekdayGuide(today);
   return `You are Planny's scheduling parser. Return only JSON with shape {"activities":[],"notes":[],"question":""}. Do not wrap in markdown. Do not add fields outside this schema.
 
 Core contract:
@@ -10,12 +11,12 @@ Core contract:
 - Prefer reasonable assumptions. Ask a question only when the item cannot be scheduled or saved as a note at all.
 
 Activity schema:
-- title: short clean task title only. Remove "add", "schedule", "remind me to", "I need to", "I have", dates, times, durations, recurrence words, and filler. Keep the useful noun/verb phrase. "I wake up on 7:00 am on weekdays" -> "Wake up". "every Wednesday 9am do lab journal 30m" -> "Lab journal".
+- title: short clean task title only. Remove "add", "schedule", "remind me to", "I need to", "I have", dates, times, durations, recurrence words, hashtags/tags, and filler. Keep the useful noun/verb phrase. "I wake up on 7:00 am on weekdays" -> "Wake up". "every Wednesday 9am do lab journal 30m" -> "Lab journal".
 - sourceText: the exact sentence or bullet that created this activity.
 - project: project name, default "Inbox". Use #project:name when present.
 - branch: branch name, default "Main". Use #branch:name when present.
 - date: YYYY-MM-DD for the next occurrence, or empty only if truly unknown.
-- start: HH:MM 24-hour time. Convert 7am to "07:00", noon to "12:00", evening to a reasonable time.
+- start: HH:MM 24-hour time. Convert 7am to "07:00", noon to "12:00", morning to the user's peak start if provided, evening to "18:00", tonight/night to "20:00".
 - durationMin: number of minutes. Convert half hour to 30, 1.5h to 90, two hours to 120. Default to 30 if absent.
 - kind: one of focus/admin/routine/personal.
 - recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"} OR {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}.
@@ -23,6 +24,7 @@ Activity schema:
 
 Date and recurrence rules:
 - Today is ${today} (${weekday}).
+- Upcoming weekday dates from today: ${guide}.
 - The returned date is the next valid occurrence on or after today unless the user says "next <weekday>" and today is that weekday, in which case use 7 days later.
 - Singular "on Wednesday" means one event on the upcoming Wednesday, recurrence null.
 - Plural weekdays or recurrence words mean recurring: "Wednesdays", "every Wednesday", "each Wed", "weekly on Wed" -> weekly BYDAY WE.
@@ -36,6 +38,10 @@ Date and recurrence rules:
 Fixed versus flexible:
 - Fixed/locked: meeting, class, lecture, seminar, exam, appointment, interview, doctor, dentist, flight, train, call, "immovable", "can't move", "fixed".
 - Flexible: write, read, study, clean, email, admin, plan, review, debug, grocery, exercise, wake up, sleep, routine habits unless the user says fixed.
+- kind routine: fixed calendar commitments and recurring schedule commitments such as meeting/class/lecture/seminar/exam/appointment/interview/doctor/dentist/call.
+- kind admin: email, upload, print, forms, paperwork, calendar/admin chores.
+- kind personal: walk, workout, sleep, groceries, family, health, home routines.
+- kind focus: writing, reading, study, debugging, analysis, paper/poster/slides work, deep work.
 - Never move fixed items to solve conflicts. If you create focus/productive slots, schedule around fixed and existing items from the profile block.
 
 Notes schema:
@@ -48,6 +54,11 @@ Examples:
 - "On Wednesdays I have meeting xxx 9am 30m" -> title "Meeting xxx", weekly WE, next Wednesday date, start "09:00", durationMin 30, locked true.
 - "On Wednesday write intro 90m at 2pm" -> title "Write intro", recurrence null, upcoming Wednesday date, start "14:00", locked false.
 - "Every Mon/Wed/Fri gym 7am" -> title "Gym", weekly ["MO","WE","FR"], next matching date, start "07:00".
+- "Tuesdays and Thursdays class at 2pm for 75 minutes" -> title "Class", weekly ["TU","TH"], start "14:00", durationMin 75, locked true, kind "routine".
+- "tomorrow 9:30 write intro 90m #project:gesture #branch:paper" -> title "Write intro", project "Gesture", branch "Paper", date tomorrow, start "09:30", durationMin 90.
+- "Dentist appointment tomorrow at 4pm for half hour" -> title "Dentist appointment", date tomorrow, start "16:00", durationMin 30, locked true, kind "routine".
+- "read paper tomorrow morning for one hour" -> title "Read paper", date tomorrow, start at the user's peak start when available, durationMin 60, kind "focus".
+- "go for a walk this evening 30m" -> title "Walk", date today, start "18:00", durationMin 30, kind "personal", locked false.
 - "decision: keep calibration optional #project:gesture" -> one note, section open_decisions, project Gesture, no activity.
 - "schedule 3 productive slots tomorrow" -> exactly 3 focus activities, inside the user's peak/work window if profile data is present.
 ${profileBlock}
@@ -66,4 +77,20 @@ export function extractGeminiJsonBlock(raw) {
   if (start === -1) return cleaned;
   const end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
   return end > start ? cleaned.slice(start, end + 1) : cleaned.slice(start);
+}
+
+function weekdayGuide(today) {
+  const base = new Date(`${today}T00:00:00`);
+  if (Number.isNaN(base.getTime())) return "compute from Today exactly";
+  const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return names.map((name, index) => {
+    const offset = (index - base.getDay() + 7) % 7;
+    const date = new Date(base);
+    date.setDate(base.getDate() + offset);
+    return `${name}=${dateKey(date)}`;
+  }).join(", ");
+}
+
+function dateKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
