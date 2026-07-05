@@ -403,11 +403,38 @@ function renderSettingsPage() {
     <section class="settings-page">
       <div class="page-head">
         <h2>Settings</h2>
-        <p>Firebase config and Gemini token stay in this browser. App settings sync after Firebase sign-in.</p>
+        <p>Follow these steps once. Firebase config and Gemini token stay in this browser.</p>
       </div>
       <section class="settings-card">
-        <h3>Firebase sync</h3>
-        <p class="muted">Create a Firebase Web App, copy its config object, and paste JSON here. Do not commit personal Firebase config to the repo.</p>
+        <div class="settings-title">
+          <div>
+            <h3>Firebase sync</h3>
+            <p class="muted">Use this for cloud sync, account backup, and settings sync.</p>
+          </div>
+          <a class="external-link" href="https://console.firebase.google.com/" target="_blank" rel="noreferrer">Open Firebase Console</a>
+        </div>
+        <ol class="setup-steps">
+          <li>
+            <strong>Create or open a Firebase project.</strong>
+            <span>Click Add project if you do not have one. Keep it on the free Spark plan.</span>
+          </li>
+          <li>
+            <strong>Create a Web App.</strong>
+            <span>Inside the project, go to Project settings -> General -> Your apps -> Web app (&lt;/&gt;).</span>
+          </li>
+          <li>
+            <strong>Copy the Firebase config object.</strong>
+            <span>Firebase shows code containing <code>const firebaseConfig = {...}</code>. Copy only the JSON-like object inside the braces.</span>
+          </li>
+          <li>
+            <strong>Paste it below and save.</strong>
+            <span>Then click Google sign-in. If Google sign-in fails, enable Authentication -> Sign-in method -> Google in Firebase Console.</span>
+          </li>
+        </ol>
+        <div class="example-box">
+          <strong>Paste something shaped like this:</strong>
+          <code>{"apiKey":"...","authDomain":"your-project.firebaseapp.com","projectId":"your-project","appId":"..."}</code>
+        </div>
         <textarea class="code-input" data-config="firebase" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","appId":"..."}'>${escapeHtml(firebaseConfig)}</textarea>
         <div class="button-row">
           <button class="primary" data-action="save-firebase">Save Firebase config</button>
@@ -416,8 +443,27 @@ function renderSettingsPage() {
         </div>
       </section>
       <section class="settings-card" id="token">
-        <h3>Gemini token</h3>
-        <p class="muted">Needed only for Gemini chat parsing. No-LLM chat works without it.</p>
+        <div class="settings-title">
+          <div>
+            <h3>Gemini token</h3>
+            <p class="muted">Needed only for Gemini chat parsing. No-LLM chat works without it.</p>
+          </div>
+          <a class="external-link" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer">Open AI Studio keys</a>
+        </div>
+        <ol class="setup-steps">
+          <li>
+            <strong>Open Google AI Studio API keys.</strong>
+            <span>Use the button above.</span>
+          </li>
+          <li>
+            <strong>Create an API key.</strong>
+            <span>Copy the key. It usually starts with <code>AIza...</code>.</span>
+          </li>
+          <li>
+            <strong>Paste it below and save.</strong>
+            <span>This token is stored only in this browser. It is not committed to the repo.</span>
+          </li>
+        </ol>
         <input type="password" data-secret="gemini" value="${escapeAttr(token)}" placeholder="Gemini API key">
         <div class="button-row">
           <button class="primary" data-action="save-gemini">Save token</button>

@@ -33,7 +33,7 @@ const app = fs.readFileSync(path.join(root, "src/app.js"), "utf8");
 for (const route of ["home", "stats", "settings"]) {
   if (!app.includes(`"${route}"`)) throw new Error(`Route ${route} is not registered`);
 }
-for (const phrase of ["Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Task notes", "Boost"]) {
+for (const phrase of ["Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Task notes", "Boost", "Open Firebase Console", "Open AI Studio keys"]) {
   if (!app.includes(phrase)) throw new Error(`Missing UI phrase: ${phrase}`);
 }
 if (fs.existsSync(path.join(root, "src/firebase-config.js"))) {
