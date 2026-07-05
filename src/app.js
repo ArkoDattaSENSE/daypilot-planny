@@ -342,11 +342,7 @@ function renderHeader() {
   return `
     <header class="topbar">
       <div class="brand-lockup">
-        <div class="mascot-bot" aria-hidden="true">
-          <span class="bot-antenna"></span>
-          <span class="bot-face"><i></i><i></i></span>
-          <span class="bot-base"></span>
-        </div>
+        ${renderMascotBot("idle", "header-mascot")}
         <div>
           <h1>Planny</h1>
           <p>${state.activities.length ? `${state.activities.length} planned activities` : "A blank slate for the day."}</p>
@@ -358,6 +354,22 @@ function renderHeader() {
         <button class="${state.route === "settings" ? "active" : ""}" data-route="settings">Settings</button>
       </nav>
     </header>
+  `;
+}
+
+function renderMascotBot(mood = "idle", extraClass = "") {
+  const moodClass = ["idle", "chat", "thinking", "tada", "ask"].includes(mood) ? `is-${mood}` : "is-idle";
+  const classes = ["mascot-bot", moodClass, extraClass].filter(Boolean).join(" ");
+  return `
+    <div class="${classes}" aria-hidden="true">
+      <span class="bot-arm left"></span>
+      <span class="bot-arm right"></span>
+      <span class="bot-antenna"></span>
+      <span class="bot-face"><i></i><i></i></span>
+      <span class="bot-base"></span>
+      <span class="bot-thoughts"><i></i><i></i><i></i></span>
+      <span class="bot-sparkle"></span>
+    </div>
   `;
 }
 
@@ -990,6 +1002,7 @@ function renderConfirmParseModal() {
           <h2>I made this - add it?</h2>
           <button data-action="discard-parse" aria-label="Back to chat">Back</button>
         </header>
+        ${renderChatSidekick("tada")}
         <p class="muted">Untick anything you do not want, then add. Nothing is saved until you confirm.</p>
         ${pending.activities.length ? `
           <h3>Tasks</h3>
@@ -1032,6 +1045,7 @@ function renderConfirmParseModal() {
 function renderChatModal() {
   const hasToken = Boolean(localStorage.getItem(geminiKey));
   const mode = state.settings.parserMode;
+  const mood = state.chatClarify ? "ask" : "chat";
   return `
     <div class="modal-backdrop" role="presentation" data-close-modal="true">
       <section class="modal" role="dialog" aria-modal="true" aria-label="Chat dump">
@@ -1039,6 +1053,7 @@ function renderChatModal() {
           <h2>Chat dump</h2>
           <button data-close-modal="true" aria-label="Close chat">Close</button>
         </header>
+        ${renderChatSidekick(mood)}
         <div class="segmented">
           <button class="${mode === "manual" ? "active" : ""}" data-chat-mode="manual">No-LLM</button>
           <button class="${mode === "gemini" ? "active" : ""}" data-chat-mode="gemini">Gemini</button>
@@ -1064,6 +1079,57 @@ function renderChatModal() {
       </section>
     </div>
   `;
+}
+
+function renderChatSidekick(mood) {
+  const copy = mascotCopy(mood);
+  return `
+    <div class="chat-sidekick is-${escapeAttr(mood)}" data-chat-sidekick>
+      ${renderMascotBot(mood, "is-mini")}
+      <div>
+        <strong data-sidekick-title>${escapeHtml(copy.title)}</strong>
+        <span data-sidekick-text>${escapeHtml(copy.text)}</span>
+      </div>
+    </div>
+  `;
+}
+
+function mascotCopy(mood) {
+  return ({
+    chat: {
+      title: "Ready for the dump",
+      text: "I will sort the mess into tasks, notes, edits, and calendar moves."
+    },
+    thinking: {
+      title: "Thinking...",
+      text: "Planny is checking dates, repeats, fixed events, and your planning rules."
+    },
+    tada: {
+      title: "Ta-da",
+      text: "Here is the plan I found. Pick what should actually land in your planner."
+    },
+    ask: {
+      title: "Tiny question",
+      text: "One answer will make the schedule safer."
+    }
+  })[mood] || {
+    title: "Planny",
+    text: "Ready when you are."
+  };
+}
+
+function setChatSidekickMood(mood) {
+  const sidekick = document.querySelector("[data-chat-sidekick]");
+  if (!sidekick) return;
+  const safeMood = ["chat", "thinking", "tada", "ask"].includes(mood) ? mood : "chat";
+  const bot = sidekick.querySelector(".mascot-bot");
+  const title = sidekick.querySelector("[data-sidekick-title]");
+  const text = sidekick.querySelector("[data-sidekick-text]");
+  const copy = mascotCopy(safeMood);
+  sidekick.className = `chat-sidekick is-${safeMood}`;
+  if (bot) bot.className = `mascot-bot is-mini is-${safeMood}`;
+  if (title) title.textContent = copy.title;
+  if (text) text.textContent = copy.text;
 }
 
 function renderTaskModal() {
@@ -1541,13 +1607,17 @@ async function submitChat() {
   if (button) {
     if (button.disabled) return;
     button.disabled = true;
-    button.textContent = "Parsing...";
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "Thinking...";
   }
+  setChatSidekickMood("thinking");
   const resetButton = () => {
     if (button) {
       button.disabled = false;
+      button.removeAttribute("aria-busy");
       button.textContent = state.chatClarify ? "Answer & plan" : "Add from chat";
     }
+    setChatSidekickMood(state.chatClarify ? "ask" : "chat");
   };
   const reschedule = applyRescheduleRequest(text);
   if (reschedule.handled) {

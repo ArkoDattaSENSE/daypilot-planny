@@ -80,6 +80,25 @@ ws.on("open", async () => {
     await evaluate("localStorage.clear()");
     await send("Page.navigate", { url: "http://localhost:8000/" });
     await waitForExpression("Boolean(document.querySelector('[data-open-modal=\"chat\"]'))");
+    await evaluate("document.querySelector('[data-open-modal=\"chat\"]').click()");
+    await waitForExpression("Boolean(document.querySelector('[data-chat-sidekick]'))");
+    const sidekickRender = await evaluate(`
+      (() => {
+        const sidekick = document.querySelector('[data-chat-sidekick]');
+        const bot = sidekick && sidekick.querySelector('.mascot-bot');
+        return JSON.stringify({
+          sidekickClass: sidekick ? sidekick.className : '',
+          botClass: bot ? bot.className : '',
+          title: sidekick ? sidekick.querySelector('[data-sidekick-title]').textContent.trim() : ''
+        });
+      })()
+    `);
+    const sidekick = JSON.parse(sidekickRender.result.value);
+    if (!sidekick.sidekickClass.includes("is-chat")) throw new Error(`Chat sidekick did not render in chat mood: ${JSON.stringify(sidekick)}`);
+    if (!sidekick.botClass.includes("is-chat")) throw new Error(`Chat mascot did not render in chat mood: ${JSON.stringify(sidekick)}`);
+    if (sidekick.title !== "Ready for the dump") throw new Error(`Unexpected sidekick copy: ${JSON.stringify(sidekick)}`);
+    await evaluate("document.querySelector('[data-close-modal=\"true\"]').click()");
+    await waitForExpression("!document.querySelector('[data-chat-sidekick]')");
     await submitChat("I wake up on 7:00 am on weekdays. On Saturdays I wake up at 9:00 am");
     const routineParsed = await evaluate(`
       JSON.stringify(JSON.parse(localStorage.getItem('daypilot-state-v2')).activities.map((a) => ({

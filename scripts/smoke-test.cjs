@@ -35,7 +35,7 @@ const app = fs.readFileSync(path.join(root, "src/app.js"), "utf8");
 for (const route of ["home", "stats", "settings"]) {
   if (!app.includes(`"${route}"`)) throw new Error(`Route ${route} is not registered`);
 }
-for (const phrase of ["Planny", "mascot-bot", "Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Task notes", "Boost", "Open Firebase Console", "Open AI Studio keys", "every Wednesday", "weekdays", "weekends", "recurrence", "Google Calendar (2-way sync)", "Planning profile", "Daily check-in reminder", "Only this occurrence", "Fixed time", "buildGeminiPrompt"]) {
+for (const phrase of ["Planny", "mascot-bot", "chat-sidekick", "Thinking...", "Ta-da", "Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Task notes", "Boost", "Open Firebase Console", "Open AI Studio keys", "every Wednesday", "weekdays", "weekends", "recurrence", "Google Calendar (2-way sync)", "Planning profile", "Daily check-in reminder", "Only this occurrence", "Fixed time", "buildGeminiPrompt"]) {
   if (!app.includes(phrase)) throw new Error(`Missing UI phrase: ${phrase}`);
 }
 for (const guard of ["alignDateToRecurrence", "dateMatchesRecurrence", "weekdayCodes", "applyRescheduleRequest", "settleFlexibleDay", "isLockedActivity"]) {
