@@ -12,6 +12,7 @@ const geminiKey = "daypilot-gemini-key";
 
 const blankState = {
   view: "day",
+  viewDate: "",
   route: "home",
   mood: {
     label: "Okay",
@@ -49,6 +50,7 @@ const blankState = {
   chatDraft: "",
   activeModal: null,
   editingId: null,
+  editingNoteId: null,
   pendingParse: null,
   chatClarify: null,
   questionnaireReturn: null,
@@ -109,6 +111,7 @@ function normalizeState(input) {
   const base = JSON.parse(JSON.stringify(blankState));
   const next = { ...base, ...(input || {}) };
   next.view = ["day", "week", "month"].includes(next.view) ? next.view : "day";
+  next.viewDate = sanitizeDateKey(next.viewDate, todayKey());
   next.mood = { ...base.mood, ...(input && input.mood ? input.mood : {}) };
   next.mood.label = String(next.mood.label || "Okay").slice(0, 60);
   next.mood.energy = clampNumber(next.mood.energy, 0, 100, 55);
@@ -148,11 +151,13 @@ function normalizeState(input) {
       };
     }
   });
-  next.activeModal = ["chat", "task", "questionnaire"].includes(next.activeModal) ? next.activeModal : null;
+  next.activeModal = ["chat", "task", "note", "questionnaire"].includes(next.activeModal) ? next.activeModal : null;
   if (next.editingId && !next.activities.some((activity) => activity.id === next.editingId)) {
     next.editingId = null;
     if (next.activeModal === "task") next.activeModal = null;
   }
+  next.editingNoteId = next.editingNoteId && next.projectNotes.some((note) => note.id === next.editingNoteId) ? next.editingNoteId : null;
+  if (next.activeModal === "note" && !next.editingNoteId) next.activeModal = null;
   return next;
 }
 
@@ -295,12 +300,14 @@ function routeName() {
   const hashRoute = location.hash.replace("#/", "");
   const raw = hashRoute || location.pathname.split("/").filter(Boolean).pop() || "today";
   if (raw === "checkin" || raw === "stats") return "stats";
+  if (raw === "notes" || raw === "projects") return "notes";
   if (raw === "settings") return "settings";
   return "home";
 }
 
 function routePath(route) {
   if (route === "stats") return "./checkin";
+  if (route === "notes") return "./notes";
   if (route === "settings") return "./settings";
   return "./today";
 }
@@ -330,7 +337,7 @@ function render() {
   document.querySelector("#app").innerHTML = `
     <main class="app">
       ${renderHeader()}
-      ${state.route === "stats" ? renderStatsPage() : state.route === "settings" ? renderSettingsPage() : renderHomePage()}
+      ${state.route === "stats" ? renderStatsPage() : state.route === "settings" ? renderSettingsPage() : state.route === "notes" ? renderNotesPage() : renderHomePage()}
     </main>
     ${renderModal()}
     <div class="toast hidden" role="status" aria-live="polite"></div>
@@ -350,6 +357,7 @@ function renderHeader() {
       </div>
       <nav class="topnav" aria-label="Main navigation">
         <button class="${state.route === "home" ? "active" : ""}" data-route="home">Plan</button>
+        <button class="${state.route === "notes" ? "active" : ""}" data-route="notes">Notes</button>
         <button class="${state.route === "stats" ? "active" : ""}" data-route="stats">Stats</button>
         <button class="${state.route === "settings" ? "active" : ""}" data-route="settings">Settings</button>
       </nav>
@@ -383,6 +391,12 @@ function renderHomePage() {
           <div class="segmented" role="tablist" aria-label="Calendar view">
             ${["day", "week", "month"].map((view) => `<button class="${state.view === view ? "active" : ""}" data-view="${view}">${titleCase(view)}</button>`).join("")}
           </div>
+          <div class="view-stepper" aria-label="Move schedule window">
+            <button data-view-shift="-1" aria-label="Previous ${escapeAttr(state.view)}">-</button>
+            <strong>${escapeHtml(viewWindowLabel())}</strong>
+            <button data-view-shift="1" aria-label="Next ${escapeAttr(state.view)}">+</button>
+            <button data-view-shift="0">Today</button>
+          </div>
           <div class="quick-actions">
             ${calendarReady() ? `<button class="icon-button" data-action="sync-gcal" aria-label="Sync Google Calendar" ${calendarSyncStatus.busy ? "disabled" : ""}>${calendarSyncStatus.busy ? "Syncing" : "Sync"}</button>` : ""}
             <button class="icon-button primary" data-open-modal="chat" aria-label="Open chat dump">Chat</button>
@@ -392,7 +406,6 @@ function renderHomePage() {
         ${renderActivityView()}
       </section>
       ${renderCalendarSyncPanel()}
-      ${renderProjectPanel()}
     </section>
   `;
 }
@@ -484,11 +497,11 @@ function renderCalendarSyncPanel() {
 }
 
 function renderActivityView() {
-  if (!state.activities.length) {
+  if (!expandedActivitiesForRange(viewRange().start, viewRange().end).length) {
     return `
       <div class="empty-state">
         <h2>Nothing planned yet</h2>
-        <p>Dump your day into chat, or add one task by hand.</p>
+        <p>Dump your day into chat, add one task by hand, or move the view forward.</p>
         <div class="button-row">
           <button class="primary" data-open-modal="chat">Open chat dump</button>
           <button data-open-modal="task">Add a task</button>
@@ -502,9 +515,9 @@ function renderActivityView() {
 }
 
 function renderDayView() {
-  const today = todayKey();
-  const items = sortedActivities().filter((activity) => activity.date === today);
-  return renderActivityList(items.length ? items : sortedActivities(), "day-list");
+  const day = state.viewDate || todayKey();
+  const items = expandedActivitiesForRange(day, day);
+  return renderActivityList(items, "day-list");
 }
 
 function renderWeekView() {
@@ -514,7 +527,7 @@ function renderWeekView() {
       ${days.map((day) => `
         <section class="day-column">
           <h3>${formatDay(day)}</h3>
-          ${renderActivityList(sortedActivities().filter((activity) => activity.date === day), "compact-list")}
+          ${renderActivityList(expandedActivitiesForRange(day, day), "compact-list")}
         </section>
       `).join("")}
     </div>
@@ -522,16 +535,17 @@ function renderWeekView() {
 }
 
 function renderMonthView() {
-  const grouped = groupByDate(sortedActivities());
-  const days = Object.keys(grouped).sort();
+  const range = viewRange();
+  const grouped = groupByDate(expandedActivitiesForRange(range.start, range.end));
+  const days = monthKeys(state.viewDate || todayKey());
   return `
     <div class="month-view">
-      ${days.length ? days.map((day) => `
+      ${days.map((day) => `
         <section>
           <h3>${formatDay(day)}</h3>
-          ${renderActivityList(grouped[day], "compact-list")}
+          ${renderActivityList(grouped[day] || [], "compact-list")}
         </section>
-      `).join("") : `<p class="muted">Nothing scheduled this month.</p>`}
+      `).join("")}
     </div>
   `;
 }
@@ -541,7 +555,7 @@ function renderActivityList(items, className) {
   return `
     <div class="${className}">
       ${items.map((activity) => `
-        <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${escapeAttr(activity.id)}">
+        <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${escapeAttr(activity.baseActivityId || activity.id)}">
           <span>${formatTime(activity.start)}</span>
           <strong>${escapeHtml(activity.title)}</strong>
           <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}${activity.locked ? " - fixed" : ""}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
@@ -551,17 +565,17 @@ function renderActivityList(items, className) {
   `;
 }
 
-function renderProjectPanel() {
+function renderNotesPage() {
   const projects = projectNames();
   const selected = projects.includes(state.selectedProject) ? state.selectedProject : projects[0];
   const notes = state.projectNotes.filter((note) => note.project === selected);
   const branches = state.branches.filter((branch) => branch.project === selected);
   return `
-    <section class="project-panel">
+    <section class="notes-page">
       <div class="project-head">
         <div>
           <h2>Projects & notes</h2>
-          <p>Thinking board, not a database.</p>
+          <p>Capture thinking, edit it later, and turn notes into scheduled work.</p>
         </div>
         <label>
           Project
@@ -572,7 +586,10 @@ function renderProjectPanel() {
       </div>
       <div class="project-grid">
         <section>
-          <h3>Notes board</h3>
+          <div class="section-title-row">
+            <h3>Notes board</h3>
+            <button class="primary" data-open-modal="note">Add note</button>
+          </div>
           <form class="note-form" data-form="project-note">
             <select name="section" aria-label="Note section">
               ${noteSections().map((section) => `<option value="${section}">${sectionLabel(section)}</option>`).join("")}
@@ -610,13 +627,22 @@ function renderNoteSection(section, notes) {
   return `
     <section class="note-section">
       <h4>${sectionLabel(section)}</h4>
-      ${sectionNotes.length ? sectionNotes.map((note) => `
-        <article class="note-card">
-          <p>${escapeHtml(note.text)}</p>
-          <span>${escapeHtml(note.branch || "Main")} - ${note.priority || 3}/5</span>
-        </article>
-      `).join("") : `<p class="muted">Empty.</p>`}
+      ${sectionNotes.length ? sectionNotes.map(renderNoteCard).join("") : `<p class="muted">Empty.</p>`}
     </section>
+  `;
+}
+
+function renderNoteCard(note) {
+  return `
+    <article class="note-card">
+      <p>${escapeHtml(note.text)}</p>
+      <span>${escapeHtml(note.branch || "Main")} - priority ${note.priority || 3}</span>
+      <div class="note-actions">
+        <button data-note-action="event" data-note-id="${escapeAttr(note.id)}">Create event</button>
+        <button data-note-action="edit" data-note-id="${escapeAttr(note.id)}">Edit</button>
+        <button data-note-action="delete" data-note-id="${escapeAttr(note.id)}">Delete</button>
+      </div>
+    </article>
   `;
 }
 
@@ -696,7 +722,7 @@ function renderStatsPage() {
 
 function accountabilityBuckets() {
   const today = todayKey();
-  const checkable = sortedActivities().filter((activity) => isCheckableActivity(activity));
+  const checkable = expandedActivitiesForRange(today, addDays(today, 30)).filter((activity) => isCheckableActivity(activity));
   return {
     today: checkable.filter((activity) => activity.date === today),
     upcoming: checkable.filter((activity) => activity.date > today)
@@ -931,6 +957,7 @@ function renderSettingsPage() {
 function renderModal() {
   if (state.activeModal === "chat") return renderChatModal();
   if (state.activeModal === "task") return renderTaskModal();
+  if (state.activeModal === "note") return renderNoteModal();
   if (state.activeModal === "questionnaire") return renderQuestionnaireModal();
   if (state.activeModal === "confirm-parse") return renderConfirmParseModal();
   if (state.activeModal === "recurring-scope") return renderRecurringScopeModal();
@@ -1054,7 +1081,7 @@ function renderChatModal() {
           <button data-close-modal="true" aria-label="Close chat">Close</button>
         </header>
         ${renderChatSidekick(mood)}
-        <div class="segmented">
+        <div class="segmented chat-mode-toggle">
           <button class="${mode === "manual" ? "active" : ""}" data-chat-mode="manual">No-LLM</button>
           <button class="${mode === "gemini" ? "active" : ""}" data-chat-mode="gemini">Gemini</button>
         </div>
@@ -1132,6 +1159,41 @@ function setChatSidekickMood(mood) {
   if (text) text.textContent = copy.text;
 }
 
+function renderNoteModal() {
+  const note = getEditingNote() || emptyNote();
+  const editing = Boolean(getEditingNote());
+  return `
+    <div class="modal-backdrop" role="presentation" data-close-modal="true">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="${editing ? "Edit note" : "Add note"}">
+        <header>
+          <h2>${editing ? "Edit note" : "Add note"}</h2>
+          <button data-close-modal="true" aria-label="Close note editor">Close</button>
+        </header>
+        <form data-form="project-note">
+          <div class="form-grid">
+            <label>Project <input name="project" value="${escapeAttr(note.project || state.selectedProject || "Inbox")}"></label>
+            <label>Branch <input name="branch" value="${escapeAttr(note.branch || "Main")}"></label>
+          </div>
+          <div class="form-grid">
+            <label>Section
+              <select name="section">
+                ${noteSections().map((section) => `<option value="${section}" ${note.section === section ? "selected" : ""}>${sectionLabel(section)}</option>`).join("")}
+              </select>
+            </label>
+            <label>Priority <input type="number" min="1" max="5" step="1" name="priority" value="${clampNumber(note.priority, 1, 5, 3)}"></label>
+          </div>
+          <label>Note <textarea name="text" required>${escapeHtml(note.text || "")}</textarea></label>
+          <div class="button-row">
+            <button class="primary" type="submit">${editing ? "Save note" : "Add note"}</button>
+            ${editing ? `<button type="button" data-note-action="event" data-note-id="${escapeAttr(note.id)}">Create event</button><button type="button" data-note-action="delete" data-note-id="${escapeAttr(note.id)}">Delete</button>` : ""}
+            <button type="button" data-close-modal="true">Cancel</button>
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
 function renderTaskModal() {
   const editing = getEditingActivity();
   const activity = editing || emptyActivity();
@@ -1201,6 +1263,12 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll("[data-view-shift]").forEach((button) => {
+    button.addEventListener("click", () => {
+      shiftViewWindow(Number(button.dataset.viewShift));
+    });
+  });
+
   document.querySelectorAll("[data-mood]").forEach((input) => {
     const apply = () => {
       const key = input.dataset.mood;
@@ -1222,6 +1290,7 @@ function bindEvents() {
     button.addEventListener("click", () => {
       state.activeModal = button.dataset.openModal;
       state.editingId = null;
+      state.editingNoteId = null;
       render();
     });
   });
@@ -1231,6 +1300,7 @@ function bindEvents() {
       if (event.target !== element && element.classList.contains("modal-backdrop")) return;
       state.activeModal = null;
       state.editingId = null;
+      state.editingNoteId = null;
       state.chatClarify = null;
       render();
     });
@@ -1242,6 +1312,10 @@ function bindEvents() {
       state.activeModal = "task";
       render();
     });
+  });
+
+  document.querySelectorAll("[data-note-action]").forEach((button) => {
+    button.addEventListener("click", () => handleNoteAction(button.dataset.noteAction, button.dataset.noteId));
   });
 
   document.querySelectorAll("[data-chat-mode]").forEach((button) => {
@@ -1310,8 +1384,9 @@ function bindEvents() {
     });
   }
 
-  const noteForm = document.querySelector("[data-form='project-note']");
-  if (noteForm) noteForm.addEventListener("submit", submitProjectNote);
+  document.querySelectorAll("[data-form='project-note']").forEach((noteForm) => {
+    noteForm.addEventListener("submit", submitProjectNote);
+  });
   const branchForm = document.querySelector("[data-form='branch']");
   if (branchForm) branchForm.addEventListener("submit", submitBranch);
   const questionnaireForm = document.querySelector("[data-form='questionnaire']");
@@ -2284,19 +2359,105 @@ function readFirebaseConfig() {
 function submitProjectNote(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const text = form.get("text").trim();
+  const text = String(form.get("text") || "").trim();
   if (!text) return;
   const section = form.get("section") || inferNoteSection(text.toLowerCase());
-  state.projectNotes.unshift({
-    id: makeId(),
+  const note = sanitizeNote({
+    id: state.editingNoteId || makeId(),
+    project: form.get("project") || state.selectedProject || "Inbox",
+    branch: form.get("branch") || "Main",
+    section: noteSections().includes(section) ? section : inferNoteSection(text.toLowerCase()),
+    text,
+    priority: form.get("priority") || inferNotePriority(text.toLowerCase()),
+    createdAt: getEditingNote() && getEditingNote().createdAt
+  });
+  if (!note) return;
+  const wasEditing = Boolean(state.editingNoteId);
+  if (state.editingNoteId) {
+    state.projectNotes = state.projectNotes.map((item) => item.id === state.editingNoteId ? note : item);
+  } else {
+    state.projectNotes.unshift(note);
+  }
+  ensureBranch(note.project, note.branch);
+  state.selectedProject = note.project;
+  state.activeModal = null;
+  state.editingNoteId = null;
+  announce(wasEditing ? "Project note updated." : "Project note saved.");
+}
+
+function emptyNote() {
+  return {
     project: state.selectedProject || "Inbox",
     branch: "Main",
-    section: noteSections().includes(section) ? section : inferNoteSection(text.toLowerCase()),
-    text: text.slice(0, 2000),
-    priority: inferNotePriority(text.toLowerCase()),
-    createdAt: new Date().toISOString()
+    section: "task_seeds",
+    text: "",
+    priority: 3
+  };
+}
+
+function getEditingNote() {
+  return state.projectNotes.find((note) => note.id === state.editingNoteId);
+}
+
+function handleNoteAction(action, id) {
+  const note = state.projectNotes.find((item) => item.id === id);
+  if (!note) {
+    toast("That note is no longer available.");
+    return;
+  }
+  if (action === "edit") {
+    state.editingNoteId = note.id;
+    state.activeModal = "note";
+    render();
+    return;
+  }
+  if (action === "delete") {
+    state.projectNotes = state.projectNotes.filter((item) => item.id !== note.id);
+    state.activeModal = null;
+    state.editingNoteId = null;
+    announce("Project note deleted.");
+    return;
+  }
+  if (action === "event") {
+    createEventFromNote(note);
+  }
+}
+
+function createEventFromNote(note) {
+  const extra = window.prompt("Add date/time/duration or extra instructions for this note. Leave blank and Planny will choose the next open slot.", "");
+  if (extra === null) return;
+  const title = firstUsefulLine(note.text, "Follow up note");
+  const parsed = parseNoLlm(`${extra || `today ${nextOpenTime()} 30m`} ${title}`);
+  const activity = parsed.activities[0] || sanitizeActivity({
+    id: makeId(),
+    title,
+    project: note.project,
+    branch: note.branch || "Main",
+    date: todayKey(),
+    start: nextOpenTime(),
+    durationMin: 30,
+    kind: note.section === "blocked_by" ? "admin" : "focus",
+    note: note.text,
+    status: "planned"
   });
-  announce("Project note saved.");
+  if (!activity) {
+    toast("Could not create an event from that note.");
+    return;
+  }
+  activity.project = note.project || activity.project || "Inbox";
+  activity.branch = note.branch || activity.branch || "Main";
+  activity.note = activity.note || note.text;
+  const clean = sanitizeActivity(activity);
+  if (!clean) {
+    toast("Could not create an event from that note.");
+    return;
+  }
+  state.activities.push(clean);
+  ensureBranch(clean.project, clean.branch);
+  state.activeModal = null;
+  state.editingNoteId = null;
+  announce("Event created from note.");
+  if (calendarReady() && hasValidToken()) syncCalendarNow(false);
 }
 
 function submitBranch(event) {
@@ -2804,6 +2965,64 @@ function sortedActivities() {
   return [...state.activities].sort((a, b) => `${a.date} ${a.start}`.localeCompare(`${b.date} ${b.start}`));
 }
 
+function sortedScheduleItems(items) {
+  return [...items].sort((a, b) => `${a.date} ${a.start} ${a.title}`.localeCompare(`${b.date} ${b.start} ${b.title}`));
+}
+
+function expandedActivitiesForRange(startKey, endKey) {
+  const start = sanitizeDateKey(startKey, todayKey());
+  const end = sanitizeDateKey(endKey, start);
+  const items = [];
+  sortedActivities().forEach((activity) => {
+    if (!activity.recurrence) {
+      if (activity.date >= start && activity.date <= end) items.push(activity);
+      return;
+    }
+    dateKeysBetween(maxDateKey(activity.date, start), end).forEach((date) => {
+      if (!recurrenceOccursOn(activity, date)) return;
+      items.push({
+        ...activity,
+        date,
+        occurrenceDate: date,
+        baseActivityId: activity.id
+      });
+    });
+  });
+  return sortedScheduleItems(items);
+}
+
+function recurrenceOccursOn(activity, dateKey) {
+  if (!activity || !activity.recurrence) return false;
+  if (dateKey < activity.date) return false;
+  const recurrence = activity.recurrence;
+  if (recurrence.frequency === "daily") return true;
+  if (recurrence.frequency === "weekly") {
+    const days = weekdayCodes(recurrence.byDay);
+    return days.length ? days.includes(weekdayCodeForDate(dateKey)) : weekdayCodeForDate(dateKey) === weekdayCodeForDate(activity.date);
+  }
+  if (recurrence.frequency === "monthly") {
+    return Number(dateKey.slice(8, 10)) === Number(activity.date.slice(8, 10));
+  }
+  return false;
+}
+
+function dateKeysBetween(startKey, endKey) {
+  const keys = [];
+  let current = sanitizeDateKey(startKey, todayKey());
+  const end = sanitizeDateKey(endKey, current);
+  let guard = 0;
+  while (current <= end && guard < 370) {
+    keys.push(current);
+    current = addDays(current, 1);
+    guard += 1;
+  }
+  return keys;
+}
+
+function maxDateKey(a, b) {
+  return a > b ? a : b;
+}
+
 function groupByDate(items) {
   return items.reduce((groups, item) => {
     groups[item.date] = groups[item.date] || [];
@@ -2900,10 +3119,59 @@ function branchFromText(lower) {
 }
 
 function weekKeys() {
-  const today = new Date(`${todayKey()}T00:00:00`);
-  const day = today.getDay();
+  const anchor = new Date(`${sanitizeDateKey(state.viewDate, todayKey())}T00:00:00`);
+  const day = anchor.getDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
-  return Array.from({ length: 7 }, (_, index) => addDays(todayKey(), mondayOffset + index));
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(anchor);
+    date.setDate(anchor.getDate() + mondayOffset + index);
+    return dateToKey(date);
+  });
+}
+
+function monthKeys(anchorKey) {
+  const anchor = new Date(`${sanitizeDateKey(anchorKey, todayKey())}T00:00:00`);
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const keys = [];
+  const cursor = new Date(first);
+  while (cursor.getMonth() === first.getMonth()) {
+    keys.push(dateToKey(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return keys;
+}
+
+function viewRange() {
+  const anchor = sanitizeDateKey(state.viewDate, todayKey());
+  if (state.view === "week") {
+    const days = weekKeys();
+    return { start: days[0], end: days[days.length - 1] };
+  }
+  if (state.view === "month") {
+    const days = monthKeys(anchor);
+    return { start: days[0], end: days[days.length - 1] };
+  }
+  return { start: anchor, end: anchor };
+}
+
+function viewWindowLabel() {
+  const range = viewRange();
+  if (state.view === "day") return formatDate(range.start);
+  if (state.view === "week") return `${formatDate(range.start)} - ${formatDate(range.end)}`;
+  const date = new Date(`${range.start}T00:00:00`);
+  return date.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function shiftViewWindow(direction) {
+  if (!direction) {
+    state.viewDate = todayKey();
+  } else if (state.view === "month") {
+    state.viewDate = addMonths(state.viewDate || todayKey(), direction);
+  } else {
+    state.viewDate = addDays(state.viewDate || todayKey(), direction * (state.view === "week" ? 7 : 1));
+  }
+  persist();
+  render();
 }
 
 function dateToKey(date) {
@@ -2917,6 +3185,16 @@ function todayKey() {
 function addDays(key, amount) {
   const date = new Date(`${key}T00:00:00`);
   date.setDate(date.getDate() + amount);
+  return dateToKey(date);
+}
+
+function addMonths(key, amount) {
+  const date = new Date(`${sanitizeDateKey(key, todayKey())}T00:00:00`);
+  const day = date.getDate();
+  date.setDate(1);
+  date.setMonth(date.getMonth() + amount);
+  const last = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+  date.setDate(Math.min(day, last));
   return dateToKey(date);
 }
 

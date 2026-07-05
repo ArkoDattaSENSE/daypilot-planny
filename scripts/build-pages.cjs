@@ -18,6 +18,7 @@ const files = [
   "dump/index.html",
   "week/index.html",
   "now/index.html",
+  "notes/index.html",
   "checkin/index.html",
   "settings/index.html"
 ];

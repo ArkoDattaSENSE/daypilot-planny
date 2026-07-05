@@ -17,6 +17,7 @@ const required = [
   "dump/index.html",
   "week/index.html",
   "now/index.html",
+  "notes/index.html",
   "checkin/index.html",
   "settings/index.html"
 ];
@@ -32,13 +33,13 @@ const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
 if (!html.includes("./src/app.js")) throw new Error("index.html does not load app.js");
 
 const app = fs.readFileSync(path.join(root, "src/app.js"), "utf8");
-for (const route of ["home", "stats", "settings"]) {
+for (const route of ["home", "notes", "stats", "settings"]) {
   if (!app.includes(`"${route}"`)) throw new Error(`Route ${route} is not registered`);
 }
-for (const phrase of ["Planny", "mascot-bot", "chat-sidekick", "Thinking...", "Ta-da", "Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Task notes", "Boost", "Open Firebase Console", "Open AI Studio keys", "every Wednesday", "weekdays", "weekends", "recurrence", "Google Calendar (2-way sync)", "Planning profile", "Daily check-in reminder", "Only this occurrence", "Fixed time", "buildGeminiPrompt"]) {
+for (const phrase of ["Planny", "mascot-bot", "chat-sidekick", "Thinking...", "Ta-da", "Chat dump", "Firebase is not configured", "Add activity", "Accountability", "Projects & notes", "Create event", "Task notes", "Boost", "Open Firebase Console", "Open AI Studio keys", "every Wednesday", "weekdays", "weekends", "recurrence", "Google Calendar (2-way sync)", "Planning profile", "Daily check-in reminder", "Only this occurrence", "Fixed time", "buildGeminiPrompt"]) {
   if (!app.includes(phrase)) throw new Error(`Missing UI phrase: ${phrase}`);
 }
-for (const guard of ["alignDateToRecurrence", "dateMatchesRecurrence", "weekdayCodes", "applyRescheduleRequest", "settleFlexibleDay", "isLockedActivity"]) {
+for (const guard of ["expandedActivitiesForRange", "alignDateToRecurrence", "dateMatchesRecurrence", "weekdayCodes", "applyRescheduleRequest", "settleFlexibleDay", "isLockedActivity"]) {
   if (!app.includes(`function ${guard}`)) throw new Error(`Missing scheduling guard: ${guard}`);
 }
 const gcal = fs.readFileSync(path.join(root, "src/gcal.js"), "utf8");

@@ -126,6 +126,29 @@ ws.on("open", async () => {
       throw new Error(`Expected Saturday recurrence, got ${JSON.stringify(saturdayWake.recurrence)}`);
     }
     if (dayCode(saturdayWake.date) !== "SA") throw new Error(`Saturday routine landed on ${saturdayWake.date}`);
+    await evaluate("document.querySelector('[data-view=\"week\"]').click()");
+    await wait(300);
+    await evaluate("document.querySelector('[data-view-shift=\"1\"]').click()");
+    await waitForExpression("Boolean(document.querySelector('.week-view'))");
+    const recurrenceUi = await evaluate(`
+      (() => {
+        const titles = [...document.querySelectorAll('.activity-card strong')].map((item) => item.textContent.trim());
+        return JSON.stringify({
+          wakeCount: titles.filter((title) => title === 'Wake up').length,
+          label: document.querySelector('.view-stepper strong').textContent.trim()
+        });
+      })()
+    `);
+    const recurrenceView = JSON.parse(recurrenceUi.result.value);
+    if (recurrenceView.wakeCount !== 6) throw new Error(`Recurring wake-up routines did not expand in week view: ${JSON.stringify(recurrenceView)}`);
+    await evaluate("document.querySelector('[data-view=\"day\"]').click()");
+    await waitForExpression("document.querySelector('.day-list') || document.querySelector('.empty-state')");
+    await evaluate("document.querySelector('[data-view-shift=\"0\"]').click()");
+    await wait(300);
+    await evaluate("document.querySelector('[data-view-shift=\"1\"]').click()");
+    await wait(300);
+    const shiftedDate = await evaluate("JSON.parse(localStorage.getItem('daypilot-state-v2')).viewDate");
+    if (shiftedDate.result.value !== "2026-07-06") throw new Error(`Day + control did not advance viewDate: ${shiftedDate.result.value}`);
 
     await evaluate("localStorage.clear()");
     await send("Page.reload", { ignoreCache: true });
@@ -192,6 +215,57 @@ ws.on("open", async () => {
     if (byId["locked-meeting"].start !== "10:00") throw new Error("Fixed meeting moved during reschedule");
     if (byId["write-intro"].start !== "11:00") throw new Error(`Flexible target did not move after fixed meeting: ${byId["write-intro"].start}`);
     if (byId["email-update"].start !== "12:00") throw new Error(`Flexible neighbor did not shift after target: ${byId["email-update"].start}`);
+
+    await evaluate(`
+      localStorage.setItem('daypilot-state-v2', JSON.stringify({
+        view: 'day',
+        viewDate: '2026-07-05',
+        route: 'notes',
+        mood: { label: 'Okay', energy: 55, stress: 35 },
+        settings: { parserMode: 'manual', workDone: 0, exhaustion: 20, checkinEnabled: false, checkinTime: '21:00', checkinText: '' },
+        profile: { workStart: '', workEnd: '', peakStart: '', peakEnd: '', maxFocusMin: 90, breakMin: 15, drainingTasks: '', energizingTasks: '' },
+        selectedProject: 'Inbox',
+        activities: [],
+        projectNotes: [
+          { id: 'note-1', project: 'Inbox', branch: 'Main', section: 'task_seeds', text: 'Draft methods section', priority: 4, createdAt: '2026-07-05T00:00:00.000Z' }
+        ],
+        branches: [],
+        checkins: {},
+        calendar: { calendarId: '', lastSync: '' },
+        calendarTombstones: [],
+        chatDraft: '',
+        activeModal: null,
+        editingId: null,
+        editingNoteId: null,
+        pendingParse: null,
+        chatClarify: null,
+        questionnaireReturn: null,
+        pendingRecurringEdit: null,
+        lastMessage: 'Notes regression state ready.'
+      }));
+    `);
+    await send("Page.navigate", { url: "http://localhost:8000/notes" });
+    await waitForExpression("Boolean(document.querySelector('[data-note-action=\"event\"]'))");
+    await evaluate("window.prompt = () => 'tomorrow 3pm 45m'");
+    await evaluate("document.querySelector('[data-note-action=\"event\"][data-note-id=\"note-1\"]').click()");
+    await wait(500);
+    const noteEvent = await evaluate(`
+      JSON.stringify(JSON.parse(localStorage.getItem('daypilot-state-v2')).activities.map((a) => ({
+        title: a.title,
+        project: a.project,
+        branch: a.branch,
+        date: a.date,
+        start: a.start,
+        durationMin: a.durationMin,
+        note: a.note
+      })))
+    `);
+    const noteEvents = JSON.parse(noteEvent.result.value);
+    const createdFromNote = noteEvents.find((item) => item.title === "Draft methods section");
+    if (!createdFromNote) throw new Error(`Note create-event button did not create activity: ${JSON.stringify(noteEvents)}`);
+    if (createdFromNote.date !== "2026-07-06" || createdFromNote.start !== "15:00" || createdFromNote.durationMin !== 45) {
+      throw new Error(`Note event did not use prompt timing: ${JSON.stringify(createdFromNote)}`);
+    }
 
     await evaluate(`
       (() => {

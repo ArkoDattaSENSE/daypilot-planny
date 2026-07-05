@@ -642,11 +642,13 @@ button.active,
 
 .planner-panel,
 .settings-card,
-.project-panel {
+.project-panel,
+.notes-page {
   padding: 20px;
 }
 
-.project-panel {
+.project-panel,
+.notes-page {
   border: 1px solid var(--line);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.9);
@@ -673,7 +675,20 @@ button.active,
   font-size: 13.5px;
 }
 
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.section-title-row h3 {
+  margin: 0;
+}
+
 .project-panel h3,
+.notes-page h3,
 .planner-panel h3 {
   font-size: 15px;
 }
@@ -752,6 +767,18 @@ button.active,
   font-size: 13px;
 }
 
+.note-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.note-actions button {
+  min-height: 36px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
 .branch-list {
   display: grid;
   gap: 10px;
@@ -817,6 +844,27 @@ button.active,
   gap: 16px;
   align-items: center;
   margin-bottom: 18px;
+}
+
+.view-stepper {
+  display: grid;
+  grid-template-columns: 44px minmax(140px, auto) 44px auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.view-stepper strong {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--accent-strong);
+  background: #f8fafc;
+  font-size: 13.5px;
+  text-align: center;
 }
 
 .icon-button {
@@ -1375,11 +1423,20 @@ button.active,
     height: 46px;
   }
 
-  .topnav,
+  .topnav {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+  }
+
   .segmented {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .chat-mode-toggle {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .topnav button,
@@ -1421,6 +1478,7 @@ button.active,
   .project-head,
   .project-grid,
   .notes-board,
+  .note-actions,
   .branch-form {
     grid-template-columns: 1fr;
   }
@@ -1445,6 +1503,20 @@ button.active,
 
   .planner-head {
     gap: 12px;
+  }
+
+  .view-stepper {
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
+    width: 100%;
+  }
+
+  .view-stepper button:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .section-title-row {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .activity-card {
