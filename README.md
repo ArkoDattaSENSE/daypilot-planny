@@ -61,3 +61,9 @@ cp .firebaserc.example .firebaserc
 # edit .firebaserc with your project id
 firebase deploy --only firestore:rules,hosting
 ```
+
+In this sandbox, use the project script instead of the global Firebase binary:
+
+```bash
+npm run deploy:firebase
+```
