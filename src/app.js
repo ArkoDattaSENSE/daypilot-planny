@@ -1,4 +1,5 @@
 import { initFirebase, saveCloudState, loadCloudState, signIn, signOut } from "./firebase.js";
+import { buildGeminiPrompt, extractGeminiJsonBlock, geminiModel } from "./gemini-parser.js";
 import {
   getCalendarClientId, setCalendarClientId, clearCalendarToken, hasValidToken,
   requestCalendarToken, ensurePlannyCalendar, insertEvent, patchEvent, deleteEvent,
@@ -1938,42 +1939,14 @@ Scheduling rules:
 
 async function parseWithGemini(text, token, options = {}) {
   const allowQuestion = options.allowQuestion !== false;
-  const prompt = `You are a scheduling parser and planner. Return only JSON with shape {"activities":[],"notes":[],"question":""}. Do not wrap in markdown.
-
-For each activity:
-- title: a short clean task title only. Do NOT copy the whole user prompt. Remove words like "add", "schedule", "every Wednesday", dates, times, duration, and filler. Example input "every Wednesday 9am do lab journal 30m" -> title "Lab journal".
-- sourceText: the exact input line that created this activity.
-- project, branch
-- date: YYYY-MM-DD for the next occurrence, or empty if unknown.
-- start: HH:MM 24-hour time, or empty.
-- durationMin: number.
-- kind: focus/admin/routine/personal.
-- recurrence: null OR {"frequency":"daily|weekly|monthly","byDay":"MO|TU|WE|TH|FR|SA|SU"} OR {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}.
-- For "every Wednesday", use {"frequency":"weekly","byDay":"WE"}.
-- For "weekdays", use {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}.
-- For "weekends", use {"frequency":"weekly","byDay":["SA","SU"]}.
-- locked: true for meetings/classes/appointments/exams/seminars/calls or anything the user says is fixed/immovable. false for flexible work.
-
-Hard date rules:
-- Today is ${todayKey()} (${weekdayName(weekdayCodeForDate(todayKey()))}).
-- If recurrence.byDay is set, date MUST be the next occurrence of one of those exact weekdays. A Wednesday recurrence can NEVER have a Thursday date. A weekday recurrence can only be Monday-Friday.
-- "On Wednesdays I have meeting X" means a weekly Wednesday fixed meeting: recurrence {"frequency":"weekly","byDay":"WE"}, locked true, and date equal to the next Wednesday.
-- "I wake up at 7:00 am on weekdays" means a weekday routine: recurrence {"frequency":"weekly","byDay":["MO","TU","WE","TH","FR"]}, date equal to the next weekday, start "07:00".
-- "on Wednesday" singular means one event on the upcoming Wednesday unless the user also says every/each/weekly/Wednesdays.
-- If an item is fixed/locked, never move it to solve a conflict.
-
-For notes:
-- project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5.
-${profilePromptBlock()}
-${allowQuestion
-    ? `If the request is genuinely too ambiguous to schedule, set "question" to ONE short clarifying question and return empty activities and notes. Only do this when you truly cannot proceed - prefer reasonable assumptions.`
-    : `Do NOT ask any question. Make reasonable assumptions and return your best JSON plan.`}
-
-Today is ${todayKey()}.
-
-Text:
-${text}`;
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(token)}`, {
+  const prompt = buildGeminiPrompt({
+    text,
+    today: todayKey(),
+    weekday: weekdayName(weekdayCodeForDate(todayKey())),
+    profileBlock: profilePromptBlock(),
+    allowQuestion
+  });
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${encodeURIComponent(token)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -1985,7 +1958,7 @@ ${text}`;
   const data = await response.json();
   const raw = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
   if (!raw) throw new Error("Gemini returned no text");
-  const parsed = JSON.parse(extractJsonBlock(raw));
+  const parsed = JSON.parse(extractGeminiJsonBlock(raw));
   const activities = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.activities) ? parsed.activities : []);
   const notes = Array.isArray(parsed) ? [] : (Array.isArray(parsed.notes) ? parsed.notes : []);
   const question = !Array.isArray(parsed) && typeof parsed.question === "string" ? parsed.question.trim().slice(0, 300) : "";
@@ -2002,15 +1975,6 @@ ${text}`;
     })).filter(Boolean),
     question
   };
-}
-
-function extractJsonBlock(raw) {
-  const cleaned = String(raw).replace(/```json|```/gi, "").trim();
-  if (cleaned.startsWith("{") || cleaned.startsWith("[")) return cleaned;
-  const start = cleaned.search(/[{[]/);
-  if (start === -1) return cleaned;
-  const end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
-  return end > start ? cleaned.slice(start, end + 1) : cleaned.slice(start);
 }
 
 function normalizeParsedActivity(item, originalText) {
@@ -2699,6 +2663,10 @@ function parseRecurrence(value) {
   if (/\b(weekends|every weekend|each weekend|on weekends|saturday\s+(and|&|\+)\s+sunday)\b/.test(lower)) {
     return { frequency: "weekly", byDay: ["SA", "SU"] };
   }
+  const listedDays = weekdayCodesFromText(lower);
+  if (listedDays.length > 1 && /\b(every|each|weekly|recurring|routine|on)\b/.test(lower)) {
+    return { frequency: "weekly", byDay: listedDays };
+  }
   const weekday = lower.match(/\b(every|each)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/);
   if (weekday) return { frequency: "weekly", byDay: weekdayCode(weekday[2]) };
   const onPluralWeekday = lower.match(/\bon\s+(mondays|tuesdays|wednesdays|thursdays|fridays|saturdays|sundays)\b/);
@@ -2710,6 +2678,14 @@ function parseRecurrence(value) {
   if (/\bweekly\b/.test(lower)) return { frequency: "weekly" };
   if (/\bmonthly\b/.test(lower)) return { frequency: "monthly" };
   return null;
+}
+
+function weekdayCodesFromText(value) {
+  const lower = String(value || "").toLowerCase();
+  if (/\b(mwf|m\/w\/f|mon\/wed\/fri)\b/.test(lower)) return ["MO", "WE", "FR"];
+  if (/\b(tth|tu\/th|tue\/thu|tuesday\/thursday)\b/.test(lower)) return ["TU", "TH"];
+  const matches = lower.match(/\b(mon(?:day)?s?|tue(?:sday)?s?|wed(?:nesday)?s?|thu(?:rsday)?s?|fri(?:day)?s?|sat(?:urday)?s?|sun(?:day)?s?)\b/g) || [];
+  return weekdayCodes(matches);
 }
 
 function normalizeRecurrence(value) {
@@ -2825,6 +2801,7 @@ function weekdayIndex(code) {
 function cleanTitle(line) {
   return line
     .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly|next week|weekdays?|workdays?|working days?|weekends?)\b/gi, "")
+    .replace(/\b(mwf|m\/w\/f|mon\/wed\/fri|tth|tu\/th|tue\/thu|tuesday\/thursday)\b/gi, "")
     .replace(/\b(every|each|on|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
     .replace(/\b\d+(?:\.\d+)?\s?(m|min|minutes|h|hr|hours)\b/gi, "")
@@ -2977,7 +2954,7 @@ async function resolveCheckinTime(text) {
   const token = localStorage.getItem(geminiKey);
   if (!token) return null;
   try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(token)}`, {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${encodeURIComponent(token)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2989,7 +2966,7 @@ async function resolveCheckinTime(text) {
     const data = await response.json();
     const raw = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
     if (!raw) return null;
-    const parsed = JSON.parse(extractJsonBlock(raw));
+    const parsed = JSON.parse(extractGeminiJsonBlock(raw));
     return sanitizeTime(parsed && parsed.time, "") || null;
   } catch {
     return null;

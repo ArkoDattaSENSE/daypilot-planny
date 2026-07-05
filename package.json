@@ -7,7 +7,9 @@
   "scripts": {
     "build": "node scripts/build-pages.cjs",
     "start": "python3 -m http.server 8000",
-    "test": "node scripts/smoke-test.cjs",
+    "test": "node scripts/smoke-test.cjs && node scripts/gemini-parser-suite.cjs --offline",
+    "test:gemini": "node scripts/gemini-parser-suite.cjs --offline",
+    "test:gemini:live": "node scripts/gemini-parser-suite.cjs --live",
     "deploy:github": "git --git-dir=.planny_git --work-tree=. push -u origin main",
     "deploy:firebase": "node scripts/deploy-firebase.cjs"
   },
