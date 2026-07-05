@@ -173,7 +173,105 @@ ws.on("open", async () => {
     if (byId["locked-meeting"].start !== "10:00") throw new Error("Fixed meeting moved during reschedule");
     if (byId["write-intro"].start !== "11:00") throw new Error(`Flexible target did not move after fixed meeting: ${byId["write-intro"].start}`);
     if (byId["email-update"].start !== "12:00") throw new Error(`Flexible neighbor did not shift after target: ${byId["email-update"].start}`);
-    console.log(JSON.stringify({ routines, parsed: activity, rescheduled: moved }));
+
+    await evaluate(`
+      (() => {
+        const key = (date) => {
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          return year + '-' + month + '-' + day;
+        };
+        const add = (amount) => {
+          const date = new Date();
+          date.setDate(date.getDate() + amount);
+          return key(date);
+        };
+        localStorage.setItem('daypilot-state-v2', JSON.stringify({
+          view: 'day',
+          route: 'stats',
+          mood: { label: 'Okay', energy: 55, stress: 35 },
+          settings: { parserMode: 'manual', workDone: 0, exhaustion: 20, checkinEnabled: false, checkinTime: '21:00', checkinText: '' },
+          profile: { workStart: '09:00', workEnd: '17:00', peakStart: '09:00', peakEnd: '12:00', maxFocusMin: 90, breakMin: 15, drainingTasks: '', energizingTasks: '' },
+          selectedProject: 'Inbox',
+          activities: [
+            { id: 'old-done', title: 'Old done task', project: 'Inbox', branch: 'Main', date: add(-1), start: '09:00', durationMin: 30, kind: 'focus', recurrence: null, note: '', status: 'done', locked: false, notify: true, notifyMin: 10, updatedAt: '2026-07-05T00:00:00.000Z' },
+            { id: 'today-focus', title: 'Today focus', project: 'Inbox', branch: 'Main', date: add(0), start: '10:00', durationMin: 60, kind: 'focus', recurrence: null, note: '', status: 'planned', locked: false, notify: true, notifyMin: 10, updatedAt: '2026-07-05T00:00:00.000Z' },
+            { id: 'today-done', title: 'Today done already', project: 'Inbox', branch: 'Main', date: add(0), start: '11:30', durationMin: 30, kind: 'focus', recurrence: null, note: '', status: 'done', locked: false, notify: true, notifyMin: 10, updatedAt: '2026-07-05T00:00:00.000Z' },
+            { id: 'tomorrow-focus', title: 'Tomorrow focus', project: 'Inbox', branch: 'Main', date: add(1), start: '09:00', durationMin: 45, kind: 'focus', recurrence: null, note: '', status: 'planned', locked: false, notify: true, notifyMin: 10, updatedAt: '2026-07-05T00:00:00.000Z' },
+            { id: 'later-focus', title: 'Later focus', project: 'Inbox', branch: 'Main', date: add(2), start: '09:00', durationMin: 45, kind: 'focus', recurrence: null, note: '', status: 'planned', locked: false, notify: true, notifyMin: 10, updatedAt: '2026-07-05T00:00:00.000Z' }
+          ],
+          projectNotes: [],
+          branches: [],
+          checkins: {},
+          calendar: { calendarId: '', lastSync: '' },
+          calendarTombstones: [],
+          chatDraft: '',
+          activeModal: null,
+          editingId: null,
+          pendingParse: null,
+          chatClarify: null,
+          questionnaireReturn: null,
+          pendingRecurringEdit: null,
+          lastMessage: 'Accountability regression state ready.'
+        }));
+      })();
+    `);
+    await send("Page.navigate", { url: "http://localhost:8000/checkin" });
+    await waitForExpression("Boolean(document.querySelector('.check-panel'))");
+    const accountabilityInitial = await evaluate(`
+      (() => {
+        const panel = document.querySelector('.check-panel');
+        return JSON.stringify({
+          todayRows: [...panel.querySelectorAll('.check-section .check-row strong')].map((item) => item.textContent.trim()),
+          upcomingRows: [...panel.querySelectorAll('.check-more .check-row strong')].map((item) => item.textContent.trim()),
+          detailsOpen: Boolean(document.querySelector('.check-more') && document.querySelector('.check-more').open),
+          hasOldDone: panel.textContent.includes('Old done task'),
+          hasTodayDone: panel.textContent.includes('Today done already')
+        });
+      })()
+    `);
+    const initialCheck = JSON.parse(accountabilityInitial.result.value);
+    if (JSON.stringify(initialCheck.todayRows) !== JSON.stringify(["Today focus"])) {
+      throw new Error(`Accountability should show only today's open task first: ${JSON.stringify(initialCheck)}`);
+    }
+    if (JSON.stringify(initialCheck.upcomingRows) !== JSON.stringify(["Tomorrow focus", "Later focus"])) {
+      throw new Error(`Upcoming tasks should be oldest-first in the collapsed section: ${JSON.stringify(initialCheck)}`);
+    }
+    if (initialCheck.detailsOpen) throw new Error("Upcoming accountability section should start collapsed");
+    if (initialCheck.hasOldDone || initialCheck.hasTodayDone) throw new Error(`Completed tasks leaked into active accountability check-in: ${JSON.stringify(initialCheck)}`);
+
+    await evaluate(`document.querySelector('[data-status-id="today-focus"][data-status="partial"]').click()`);
+    await wait(600);
+    const partialCheck = await evaluate(`
+      (() => {
+        const saved = JSON.parse(localStorage.getItem('daypilot-state-v2'));
+        const original = saved.activities.find((item) => item.id === 'today-focus');
+        const followUp = saved.activities.find((item) => item.partialFromId === 'today-focus');
+        const todayRows = [...document.querySelectorAll('.check-section .check-row strong')].map((item) => item.textContent.trim());
+        return JSON.stringify({ original, followUp, todayRows });
+      })()
+    `);
+    const partial = JSON.parse(partialCheck.result.value);
+    if (!partial.original || partial.original.status !== "partial") throw new Error(`Original partial status not saved: ${JSON.stringify(partial)}`);
+    if (!partial.followUp) throw new Error(`Partial check-in did not create a follow-up: ${JSON.stringify(partial)}`);
+    if (partial.followUp.status !== "planned") throw new Error(`Follow-up should be planned: ${JSON.stringify(partial.followUp)}`);
+    if (partial.followUp.date <= partial.original.date) throw new Error(`Follow-up should be after the partial task date: ${JSON.stringify(partial.followUp)}`);
+    if (partial.followUp.durationMin !== 30) throw new Error(`Follow-up should use the remaining half duration: ${JSON.stringify(partial.followUp)}`);
+    if (partial.todayRows.includes("Today focus")) throw new Error(`Partial task should leave today's active queue: ${JSON.stringify(partial.todayRows)}`);
+
+    await evaluate(`document.querySelector('[data-status-id="tomorrow-focus"][data-status="done"]').click()`);
+    await wait(400);
+    const earlyDone = await evaluate(`
+      (() => {
+        const saved = JSON.parse(localStorage.getItem('daypilot-state-v2'));
+        return JSON.stringify(saved.activities.find((item) => item.id === 'tomorrow-focus'));
+      })()
+    `);
+    const tomorrowDone = JSON.parse(earlyDone.result.value);
+    if (!tomorrowDone || tomorrowDone.status !== "done") throw new Error(`Could not mark upcoming task done from accountability: ${JSON.stringify(tomorrowDone)}`);
+
+    console.log(JSON.stringify({ routines, parsed: activity, rescheduled: moved, accountability: { initialCheck, partial, tomorrowDone } }));
     ws.close();
   } catch (error) {
     console.error(error);

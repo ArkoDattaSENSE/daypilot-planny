@@ -235,6 +235,8 @@ function sanitizeActivity(item) {
     notify: item.notify !== false,
     notifyMin: clampNumber(item.notifyMin, 0, 120, 10),
     updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
+    partialFromId: typeof item.partialFromId === "string" && item.partialFromId ? item.partialFromId : undefined,
+    partialCreatedAt: typeof item.partialCreatedAt === "string" && item.partialCreatedAt ? item.partialCreatedAt : undefined,
     gcalEventId: typeof item.gcalEventId === "string" && item.gcalEventId ? item.gcalEventId : undefined,
     gcalSyncedAt: typeof item.gcalSyncedAt === "string" && item.gcalSyncedAt ? item.gcalSyncedAt : undefined,
     gcalInstanceOf: typeof item.gcalInstanceOf === "string" && item.gcalInstanceOf ? item.gcalInstanceOf : undefined
@@ -629,6 +631,9 @@ function renderStatsPage() {
   const computed = count ? Math.round((completeCount / count) * 100) : 0;
   const workDone = Number(state.settings.workDone || computed);
   const exhaustion = Number(state.settings.exhaustion || 0);
+  const accountability = accountabilityBuckets();
+  const upcomingLimit = 12;
+  const visibleUpcoming = accountability.upcoming.slice(0, upcomingLimit);
   return `
     <section class="stats-page">
       <div class="page-head">
@@ -652,22 +657,73 @@ function renderStatsPage() {
           <p>${count ? "Tune tomorrow from what actually happened." : "Add tasks first, then check in here."}</p>
         </div>
       </section>
-      <section class="planner-panel">
-        <h3>Activity check-in</h3>
-        ${state.activities.length ? state.activities.map((activity) => `
-          <article class="check-row">
-            <div>
-              <strong>${escapeHtml(activity.title)}</strong>
-              <span>${formatDate(activity.date)} ${formatTime(activity.start)}</span>
-            </div>
-            <div class="status-buttons">
-              ${["done", "partial", "missed"].map((status) => `<button class="${activity.status === status ? "active" : ""}" data-status="${status}" data-status-id="${escapeAttr(activity.id)}">${titleCase(status)}</button>`).join("")}
-            </div>
-          </article>
-        `).join("") : `<p class="muted">No activities to check in yet.</p>`}
+      <section class="planner-panel check-panel">
+        <div class="check-section-head">
+          <div>
+            <h3>Today's check-in</h3>
+            <p class="muted">Clear today first. Upcoming work stays tucked away until you need it.</p>
+          </div>
+          <span class="check-count">${accountability.today.length} today</span>
+        </div>
+        ${renderCheckSection("Today", accountability.today, "No open tasks dated today.")}
+        ${accountability.upcoming.length ? `
+          <details class="check-more">
+            <summary>
+              <span>Show more upcoming</span>
+              <strong>${accountability.upcoming.length}</strong>
+            </summary>
+            <p class="muted">Oldest first, so tomorrow's work is at the top.</p>
+            ${renderCheckRows(visibleUpcoming, true)}
+            ${accountability.upcoming.length > upcomingLimit ? `<p class="muted compact-note">${accountability.upcoming.length - upcomingLimit} later task${accountability.upcoming.length - upcomingLimit === 1 ? "" : "s"} hidden to keep check-in clean.</p>` : ""}
+          </details>
+        ` : ""}
       </section>
     </section>
   `;
+}
+
+function accountabilityBuckets() {
+  const today = todayKey();
+  const checkable = sortedActivities().filter((activity) => isCheckableActivity(activity));
+  return {
+    today: checkable.filter((activity) => activity.date === today),
+    upcoming: checkable.filter((activity) => activity.date > today)
+  };
+}
+
+function isCheckableActivity(activity) {
+  return activity && !["done", "partial", "missed"].includes(activity.status);
+}
+
+function renderCheckSection(label, items, emptyText) {
+  return `
+    <div class="check-section">
+      <div class="check-subhead">
+        <span>${escapeHtml(label)}</span>
+        <strong>${items.length}</strong>
+      </div>
+      ${items.length ? renderCheckRows(items, false) : `<p class="check-empty">${escapeHtml(emptyText)}</p>`}
+    </div>
+  `;
+}
+
+function renderCheckRows(items, showDate) {
+  return items.map((activity) => `
+    <article class="check-row">
+      <div>
+        <strong>${escapeHtml(activity.title)}</strong>
+        <span class="check-meta">
+          <span>${showDate ? `${escapeHtml(relativeDateLabel(activity.date))} - ` : ""}${formatTime(activity.start)}</span>
+          <span>${activity.durationMin}m</span>
+          ${activity.partialFromId ? `<span>Follow-up</span>` : ""}
+          ${isLockedActivity(activity) ? `<span>Fixed</span>` : ""}
+        </span>
+      </div>
+      <div class="status-buttons">
+        ${["done", "partial", "missed"].map((status) => `<button class="${activity.status === status ? "active" : ""}" data-status="${status}" data-status-id="${escapeAttr(activity.id)}">${titleCase(status)}</button>`).join("")}
+      </div>
+    </article>
+  `).join("");
 }
 
 function renderSettingsPage() {
@@ -1175,9 +1231,7 @@ function bindEvents() {
 
   document.querySelectorAll("[data-status-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      updateActivity(button.dataset.statusId, { status: button.dataset.status });
-      markCheckinDone();
-      announce("Check-in saved.");
+      handleCheckStatusUpdate(button.dataset.statusId, button.dataset.status);
     });
   });
 
@@ -2361,6 +2415,72 @@ function updateActivity(id, changes) {
   state.activities = state.activities.map((activity) => activity.id === id ? { ...activity, ...changes, updatedAt: new Date().toISOString() } : activity);
 }
 
+function handleCheckStatusUpdate(id, status) {
+  const activity = state.activities.find((item) => item.id === id);
+  if (!activity) {
+    toast("That task is no longer available.");
+    return;
+  }
+  let message = "Check-in saved.";
+  if (status === "partial") {
+    const followUp = reschedulePartialActivity(activity);
+    message = followUp
+      ? `Partial saved. Follow-up scheduled for ${formatDate(followUp.date)} ${formatTime(followUp.start)}.`
+      : "Partial saved. Existing follow-up kept.";
+  }
+  updateActivity(id, { status });
+  markCheckinDone();
+  announce(message);
+  if (calendarReady() && hasValidToken()) syncCalendarNow(false);
+}
+
+function reschedulePartialActivity(activity) {
+  const existing = state.activities.find((item) => (
+    item.partialFromId === activity.id
+    && item.date >= todayKey()
+    && !["done", "missed"].includes(item.status)
+  ));
+  if (existing) return null;
+  const baseDate = activity.date > todayKey() ? activity.date : todayKey();
+  const targetDate = addDays(baseDate, 1);
+  const draft = {
+    id: makeId(),
+    title: activity.title,
+    project: activity.project || "Inbox",
+    branch: activity.branch || "Main",
+    date: targetDate,
+    start: nextOpenTimeForDate(targetDate),
+    durationMin: partialFollowUpDuration(activity),
+    kind: activity.kind || "focus",
+    recurrence: null,
+    note: partialFollowUpNote(activity),
+    status: "planned",
+    locked: false,
+    notify: activity.notify !== false,
+    notifyMin: activity.notifyMin,
+    partialFromId: activity.id,
+    partialCreatedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  const followUp = sanitizeActivity(avoidLockedConflicts(draft));
+  if (!followUp) return null;
+  state.activities.push(followUp);
+  ensureBranch(followUp.project, followUp.branch);
+  settleFlexibleDay(followUp.date, new Set([followUp.id]));
+  return state.activities.find((item) => item.id === followUp.id) || followUp;
+}
+
+function partialFollowUpDuration(activity) {
+  const original = clampNumber(activity && activity.durationMin, 5, 600, 30);
+  return Math.max(15, Math.ceil((original / 2) / 5) * 5);
+}
+
+function partialFollowUpNote(activity) {
+  const note = String(activity.note || "").trim();
+  const marker = `Follow-up from partial check-in on ${formatDate(todayKey())}.`;
+  return [note, marker].filter(Boolean).join("\n").slice(0, 2000);
+}
+
 function calendarReady() {
   return Boolean(getCalendarClientId() && state.calendar.calendarId);
 }
@@ -2731,9 +2851,13 @@ function addDays(key, amount) {
 }
 
 function nextOpenTime() {
-  const todays = sortedActivities().filter((activity) => activity.date === todayKey());
-  if (!todays.length) return state.profile && sanitizeTime(state.profile.workStart, "") || "09:00";
-  const last = todays[todays.length - 1];
+  return nextOpenTimeForDate(todayKey());
+}
+
+function nextOpenTimeForDate(dateKey) {
+  const dayItems = sortedActivities().filter((activity) => activity.date === dateKey);
+  if (!dayItems.length) return state.profile && sanitizeTime(state.profile.workStart, "") || "09:00";
+  const last = dayItems[dayItems.length - 1];
   return addMinutes(last.start, last.durationMin || 30);
 }
 
@@ -2748,6 +2872,13 @@ function timeToMinutes(time) {
   const clean = sanitizeTime(time, "09:00");
   const parts = clean.split(":").map(Number);
   return parts[0] * 60 + parts[1];
+}
+
+function relativeDateLabel(dateKey) {
+  const today = todayKey();
+  if (dateKey === today) return "Today";
+  if (dateKey === addDays(today, 1)) return "Tomorrow";
+  return formatDate(dateKey);
 }
 
 function parseTimeFromText(lower) {
