@@ -68,6 +68,7 @@ function sanitizeState(state) {
     route: state.route,
     mood: state.mood,
     settings: state.settings,
+    profile: state.profile,
     selectedProject: state.selectedProject,
     activities: state.activities,
     projectNotes: state.projectNotes,

@@ -17,6 +17,16 @@ const blankState = {
     workDone: 0,
     exhaustion: 20
   },
+  profile: {
+    workStart: "",
+    workEnd: "",
+    peakStart: "",
+    peakEnd: "",
+    maxFocusMin: 90,
+    breakMin: 15,
+    drainingTasks: "",
+    energizingTasks: ""
+  },
   selectedProject: "Inbox",
   activities: [],
   projectNotes: [],
@@ -25,6 +35,9 @@ const blankState = {
   chatDraft: "",
   activeModal: null,
   editingId: null,
+  pendingParse: null,
+  chatClarify: null,
+  questionnaireReturn: null,
   lastMessage: "Blank slate ready. Add a task or dump into chat."
 };
 
@@ -35,13 +48,22 @@ boot();
 
 async function boot() {
   registerServiceWorker();
+  render();
   firebaseRuntime = await initFirebase(readFirebaseConfig());
   if (firebaseRuntime.ready && firebaseRuntime.user) {
-    const cloud = await loadCloudState(firebaseRuntime);
-    if (cloud) {
-      state = normalizeState(cloud);
-      saveLocal();
+    try {
+      const cloud = await loadCloudState(firebaseRuntime);
+      if (cloud) {
+        state = normalizeState(cloud);
+        saveLocal();
+      }
+    } catch (error) {
+      console.warn("Cloud state load failed", error);
+      toast("Could not load cloud data. Working from this device's copy.");
     }
+  }
+  if (needsQuestionnaire()) {
+    state.activeModal = "questionnaire";
   }
   render();
 }
@@ -67,12 +89,21 @@ function normalizeState(input) {
   next.settings.parserMode = next.settings.parserMode === "gemini" ? "gemini" : "manual";
   next.settings.workDone = clampNumber(next.settings.workDone, 0, 100, 0);
   next.settings.exhaustion = clampNumber(next.settings.exhaustion, 0, 100, 20);
+  next.profile = sanitizeProfile({ ...base.profile, ...(input && input.profile ? input.profile : {}) });
   next.activities = (Array.isArray(next.activities) ? next.activities : []).map(sanitizeActivity).filter(Boolean);
   next.projectNotes = (Array.isArray(next.projectNotes) ? next.projectNotes : []).map(sanitizeNote).filter(Boolean);
   next.branches = (Array.isArray(next.branches) ? next.branches : []).map(sanitizeBranchEntry).filter(Boolean);
   next.selectedProject = normalizeProject(next.selectedProject || firstProject(next));
   next.checkins = next.checkins && typeof next.checkins === "object" ? next.checkins : {};
   next.chatDraft = typeof next.chatDraft === "string" ? next.chatDraft : "";
+  next.pendingParse = null;
+  next.chatClarify = null;
+  next.questionnaireReturn = null;
+  next.activeModal = ["chat", "task", "questionnaire"].includes(next.activeModal) ? next.activeModal : null;
+  if (next.editingId && !next.activities.some((activity) => activity.id === next.editingId)) {
+    next.editingId = null;
+    if (next.activeModal === "task") next.activeModal = null;
+  }
   return next;
 }
 
@@ -80,6 +111,36 @@ function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.min(max, Math.max(min, Math.round(number)));
+}
+
+function sanitizeProfile(input) {
+  const source = input && typeof input === "object" ? input : {};
+  return {
+    workStart: sanitizeTime(source.workStart, ""),
+    workEnd: sanitizeTime(source.workEnd, ""),
+    peakStart: sanitizeTime(source.peakStart, ""),
+    peakEnd: sanitizeTime(source.peakEnd, ""),
+    maxFocusMin: clampNumber(source.maxFocusMin, 15, 240, 90),
+    breakMin: clampNumber(source.breakMin, 5, 60, 15),
+    drainingTasks: String(source.drainingTasks || "").slice(0, 500),
+    energizingTasks: String(source.energizingTasks || "").slice(0, 500)
+  };
+}
+
+function profileComplete() {
+  const profile = state.profile || {};
+  return Boolean(
+    profile.workStart && profile.workEnd && profile.peakStart && profile.peakEnd &&
+    String(profile.drainingTasks || "").trim() && String(profile.energizingTasks || "").trim()
+  );
+}
+
+function geminiConnected() {
+  return Boolean(localStorage.getItem(geminiKey));
+}
+
+function needsQuestionnaire() {
+  return geminiConnected() && !profileComplete();
 }
 
 function sanitizeDateKey(value, fallback) {
@@ -116,6 +177,7 @@ function sanitizeActivity(item) {
     start: sanitizeTime(item.start, "09:00"),
     durationMin: clampNumber(item.durationMin, 5, 600, 30),
     kind: sanitizeKind(item.kind),
+    recurrence: normalizeRecurrence(item.recurrence),
     note: String(item.note || "").slice(0, 2000),
     status: sanitizeStatus(item.status)
   };
@@ -160,6 +222,13 @@ function persist(syncCloud = true) {
   if (syncCloud && firebaseRuntime && firebaseRuntime.ready && firebaseRuntime.user) {
     saveCloudState(firebaseRuntime, state).catch(() => toast("Saved locally. Firebase sync did not complete."));
   }
+}
+
+function announce(message) {
+  state.lastMessage = message;
+  persist();
+  render();
+  toast(message);
 }
 
 function routeName() {
@@ -240,11 +309,11 @@ function renderMoodPanel() {
     <section class="mood-panel" aria-label="Mood tracking">
       <div>
         <h2>Mood</h2>
-        <p>${escapeHtml(state.mood.label)} - energy ${state.mood.energy}% - stress ${state.mood.stress}%</p>
+        <p data-mood-summary>${escapeHtml(state.mood.label)} - energy ${state.mood.energy}% - stress ${state.mood.stress}%</p>
       </div>
       <label>
-        Mood
-        <input data-mood="label" value="${escapeAttr(state.mood.label)}" aria-label="Mood label">
+        Feeling
+        <input data-mood="label" maxlength="60" value="${escapeAttr(state.mood.label)}" aria-label="Mood label">
       </label>
       <label>
         Energy
@@ -289,8 +358,12 @@ function renderActivityView() {
   if (!state.activities.length) {
     return `
       <div class="empty-state">
-        <h2>No activities yet</h2>
-        <p>Use Chat for a dump, or + for a manual task.</p>
+        <h2>Nothing planned yet</h2>
+        <p>Dump your day into chat, or add one task by hand.</p>
+        <div class="button-row">
+          <button class="primary" data-open-modal="chat">Open chat dump</button>
+          <button data-open-modal="task">Add a task</button>
+        </div>
       </div>
     `;
   }
@@ -339,7 +412,7 @@ function renderActivityList(items, className) {
   return `
     <div class="${className}">
       ${items.map((activity) => `
-        <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${activity.id}">
+        <button class="activity-card ${escapeAttr(activity.kind)}" data-edit="${escapeAttr(activity.id)}">
           <span>${formatTime(activity.start)}</span>
           <strong>${escapeHtml(activity.title)}</strong>
           <em>${escapeHtml(activity.project || "Inbox")} / ${escapeHtml(activity.branch || "Main")} - ${activity.durationMin}m - ${escapeHtml(activity.status || "planned")}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
@@ -382,7 +455,9 @@ function renderProjectPanel() {
             </div>
           </form>
           <div class="notes-board">
-            ${noteSections().map((section) => renderNoteSection(section, notes)).join("")}
+            ${notes.length
+              ? noteSections().map((section) => renderNoteSection(section, notes)).join("")
+              : `<p class="muted board-hint">No notes for this project yet. Save one above - decisions, blockers, and ideas all get their own shelf.</p>`}
           </div>
         </section>
         <section>
@@ -402,6 +477,7 @@ function renderProjectPanel() {
 
 function renderNoteSection(section, notes) {
   const sectionNotes = notes.filter((note) => note.section === section);
+  if (!sectionNotes.length) return "";
   return `
     <section class="note-section">
       <h4>${sectionLabel(section)}</h4>
@@ -423,10 +499,10 @@ function renderBranch(branch) {
         <span>${escapeHtml(branch.status)} - priority ${branch.priority}</span>
       </div>
       <div class="branch-actions">
-        <button data-branch-action="boost" data-branch-id="${branch.id}">Boost</button>
-        <button data-branch-action="pause" data-branch-id="${branch.id}">Pause</button>
-        <button data-branch-action="plan" data-branch-id="${branch.id}">Plan next week</button>
-        <button data-branch-action="next" data-branch-id="${branch.id}">Next action</button>
+        <button data-branch-action="boost" data-branch-id="${escapeAttr(branch.id)}">Boost</button>
+        <button data-branch-action="pause" data-branch-id="${escapeAttr(branch.id)}">Pause</button>
+        <button data-branch-action="plan" data-branch-id="${escapeAttr(branch.id)}">Plan next week</button>
+        <button data-branch-action="next" data-branch-id="${escapeAttr(branch.id)}">Next action</button>
       </div>
     </article>
   `;
@@ -470,7 +546,7 @@ function renderStatsPage() {
               <span>${formatDate(activity.date)} ${formatTime(activity.start)}</span>
             </div>
             <div class="status-buttons">
-              ${["done", "partial", "missed"].map((status) => `<button class="${activity.status === status ? "active" : ""}" data-status="${status}" data-status-id="${activity.id}">${titleCase(status)}</button>`).join("")}
+              ${["done", "partial", "missed"].map((status) => `<button class="${activity.status === status ? "active" : ""}" data-status="${status}" data-status-id="${escapeAttr(activity.id)}">${titleCase(status)}</button>`).join("")}
             </div>
           </article>
         `).join("") : `<p class="muted">No activities to check in yet.</p>`}
@@ -554,6 +630,19 @@ function renderSettingsPage() {
         </div>
       </section>
       <section class="settings-card">
+        <div class="settings-title">
+          <div>
+            <h3>Planning profile</h3>
+            <p class="muted">${profileComplete()
+              ? `Work ${escapeHtml(state.profile.workStart)}-${escapeHtml(state.profile.workEnd)}, peak focus ${escapeHtml(state.profile.peakStart)}-${escapeHtml(state.profile.peakEnd)}, blocks up to ${state.profile.maxFocusMin}m.`
+              : "Not filled in yet. Required before Gemini planning; the offline parser also uses it for productive slots."}</p>
+          </div>
+        </div>
+        <div class="button-row">
+          <button class="primary" data-action="edit-profile">${profileComplete() ? "Edit planning profile" : "Fill planning profile"}</button>
+        </div>
+      </section>
+      <section class="settings-card">
         <h3>Synced app settings</h3>
         <label>
           Default chat mode
@@ -570,7 +659,93 @@ function renderSettingsPage() {
 function renderModal() {
   if (state.activeModal === "chat") return renderChatModal();
   if (state.activeModal === "task") return renderTaskModal();
+  if (state.activeModal === "questionnaire") return renderQuestionnaireModal();
+  if (state.activeModal === "confirm-parse") return renderConfirmParseModal();
   return "";
+}
+
+function renderQuestionnaireModal() {
+  const profile = state.profile;
+  return `
+    <div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="Planning profile">
+        <header>
+          <h2>Tell the planner how you work</h2>
+        </header>
+        <p class="muted">Required once for Gemini planning. Answers sync to your account and power requests like "schedule four productive slots without draining me".</p>
+        <form data-form="questionnaire">
+          <div class="form-grid">
+            <label>Work usually starts <input type="time" name="workStart" required value="${escapeAttr(profile.workStart)}"></label>
+            <label>Work usually ends <input type="time" name="workEnd" required value="${escapeAttr(profile.workEnd)}"></label>
+          </div>
+          <div class="form-grid">
+            <label>Peak focus from <input type="time" name="peakStart" required value="${escapeAttr(profile.peakStart)}"></label>
+            <label>Peak focus until <input type="time" name="peakEnd" required value="${escapeAttr(profile.peakEnd)}"></label>
+          </div>
+          <div class="form-grid">
+            <label>Max deep-focus minutes <input type="number" name="maxFocusMin" min="15" max="240" step="5" required value="${profile.maxFocusMin}"></label>
+            <label>Break between slots (min) <input type="number" name="breakMin" min="5" max="60" step="5" required value="${profile.breakMin}"></label>
+          </div>
+          <label>Tasks that drain you <textarea name="drainingTasks" required placeholder="grading, admin email, long meetings, debugging without a plan...">${escapeHtml(profile.drainingTasks)}</textarea></label>
+          <label>Work you can do tired or that energizes you <textarea name="energizingTasks" required placeholder="plotting results, light reading, tidying notes, quick replies...">${escapeHtml(profile.energizingTasks)}</textarea></label>
+          <div class="button-row">
+            <button class="primary" type="submit">Save profile</button>
+            ${needsQuestionnaire()
+              ? `<button type="button" data-action="disconnect-gemini">Disconnect Gemini instead</button>`
+              : `<button type="button" data-close-modal="true">Cancel</button>`}
+          </div>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderConfirmParseModal() {
+  const pending = state.pendingParse || { activities: [], notes: [] };
+  return `
+    <div class="modal-backdrop" role="presentation">
+      <section class="modal" role="dialog" aria-modal="true" aria-label="Confirm parsed plan">
+        <header>
+          <h2>I made this - add it?</h2>
+          <button data-action="discard-parse" aria-label="Back to chat">Back</button>
+        </header>
+        <p class="muted">Untick anything you do not want, then add. Nothing is saved until you confirm.</p>
+        ${pending.activities.length ? `
+          <h3>Tasks</h3>
+          <div class="confirm-list">
+            ${pending.activities.map((activity, index) => `
+              <label class="confirm-item">
+                <input type="checkbox" checked data-confirm-activity="${index}">
+                <span>
+                  <strong>${escapeHtml(activity.title)}</strong>
+                  <em>${formatDate(activity.date)} ${formatTime(activity.start)} - ${activity.durationMin}m - ${escapeHtml(activity.project)} / ${escapeHtml(activity.branch)}${activity.recurrence ? ` - ${escapeHtml(recurrenceLabel(activity.recurrence))}` : ""}</em>
+                </span>
+              </label>
+            `).join("")}
+          </div>
+        ` : ""}
+        ${pending.notes.length ? `
+          <h3>Notes</h3>
+          <div class="confirm-list">
+            ${pending.notes.map((note, index) => `
+              <label class="confirm-item">
+                <input type="checkbox" checked data-confirm-note="${index}">
+                <span>
+                  <strong>${escapeHtml(sectionLabel(note.section))}</strong>
+                  <em>${escapeHtml(note.text.slice(0, 140))}</em>
+                </span>
+              </label>
+            `).join("")}
+          </div>
+        ` : ""}
+        ${!pending.activities.length && !pending.notes.length ? `<p class="muted">Nothing was parsed.</p>` : ""}
+        <div class="button-row">
+          <button class="primary" data-action="confirm-parse">Add selected</button>
+          <button data-action="discard-parse">Discard</button>
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function renderChatModal() {
@@ -594,9 +769,15 @@ function renderChatModal() {
             <button data-action="token-settings">Open token settings</button>
           </div>
         ` : ""}
-        <textarea data-chat-input placeholder="Dump tasks, routines, edits, or reschedule requests. Example: tomorrow 9:30 write intro 90m"></textarea>
+        ${state.chatClarify ? `
+          <div class="sync-banner">
+            <strong>Gemini asks:</strong>
+            <span>${escapeHtml(state.chatClarify.question)}</span>
+          </div>
+        ` : ""}
+        <textarea data-chat-input placeholder="${state.chatClarify ? "Type your answer to the question above" : "Dump tasks, routines, edits, or reschedule requests. Example: tomorrow 9:30 write intro 90m, or: schedule four productive slots"}">${escapeHtml(state.chatDraft)}</textarea>
         <div class="button-row">
-          <button class="primary" data-action="submit-chat">Add from chat</button>
+          <button class="primary" data-action="submit-chat">${state.chatClarify ? "Answer & plan" : "Add from chat"}</button>
           <button data-close-modal="true">Cancel</button>
         </div>
       </section>
@@ -623,7 +804,7 @@ function renderTaskModal() {
           <div class="form-grid">
             <label>Date <input type="date" name="date" value="${escapeAttr(activity.date)}"></label>
             <label>Start <input type="time" name="start" value="${escapeAttr(activity.start)}"></label>
-            <label>Minutes <input type="number" min="5" step="5" name="durationMin" value="${activity.durationMin}"></label>
+            <label>Minutes <input type="number" min="5" max="600" step="5" name="durationMin" value="${clampNumber(activity.durationMin, 5, 600, 30)}"></label>
             <label>Repeats <input name="recurrence" value="${escapeAttr(recurrenceInputValue(activity.recurrence))}" placeholder="every Wednesday, daily, weekly"></label>
             <label>Type
               <select name="kind">
@@ -659,9 +840,17 @@ function bindEvents() {
   });
 
   document.querySelectorAll("[data-mood]").forEach((input) => {
-    input.addEventListener("input", () => {
+    const apply = () => {
       const key = input.dataset.mood;
-      state.mood[key] = key === "label" ? input.value : Number(input.value);
+      state.mood[key] = key === "label" ? input.value.slice(0, 60) : clampNumber(input.value, 0, 100, 50);
+    };
+    input.addEventListener("input", () => {
+      apply();
+      const summary = document.querySelector("[data-mood-summary]");
+      if (summary) summary.textContent = `${state.mood.label} - energy ${state.mood.energy}% - stress ${state.mood.stress}%`;
+    });
+    input.addEventListener("change", () => {
+      apply();
       persist();
       render();
     });
@@ -680,6 +869,7 @@ function bindEvents() {
       if (event.target !== element && element.classList.contains("modal-backdrop")) return;
       state.activeModal = null;
       state.editingId = null;
+      state.chatClarify = null;
       render();
     });
   });
@@ -694,11 +884,31 @@ function bindEvents() {
 
   document.querySelectorAll("[data-chat-mode]").forEach((button) => {
     button.addEventListener("click", () => {
+      const chatField = document.querySelector("[data-chat-input]");
+      if (chatField) state.chatDraft = chatField.value;
       state.settings.parserMode = button.dataset.chatMode;
+      if (button.dataset.chatMode === "gemini" && needsQuestionnaire()) {
+        state.questionnaireReturn = "chat";
+        state.activeModal = "questionnaire";
+        toast("Answer these once so Gemini can plan around your energy.");
+      }
       persist();
       render();
     });
   });
+
+  const chatInput = document.querySelector("[data-chat-input]");
+  if (chatInput) {
+    chatInput.addEventListener("input", () => {
+      state.chatDraft = chatInput.value;
+    });
+    chatInput.addEventListener("keydown", (event) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        submitChat();
+      }
+    });
+  }
 
   const chatSubmit = document.querySelector("[data-action='submit-chat']");
   if (chatSubmit) chatSubmit.addEventListener("click", submitChat);
@@ -706,8 +916,18 @@ function bindEvents() {
   if (taskForm) taskForm.addEventListener("submit", submitTaskForm);
 
   document.querySelectorAll("[data-setting]").forEach((input) => {
+    const apply = () => {
+      state.settings[input.dataset.setting] = input.type === "range" ? clampNumber(input.value, 0, 100, 0) : input.value;
+    };
     input.addEventListener("input", () => {
-      state.settings[input.dataset.setting] = input.type === "range" ? Number(input.value) : input.value;
+      apply();
+      if (input.type === "range") {
+        const readout = input.parentElement && input.parentElement.querySelector("strong");
+        if (readout) readout.textContent = `${state.settings[input.dataset.setting]}%`;
+      }
+    });
+    input.addEventListener("change", () => {
+      apply();
       persist();
       render();
     });
@@ -716,9 +936,7 @@ function bindEvents() {
   document.querySelectorAll("[data-status-id]").forEach((button) => {
     button.addEventListener("click", () => {
       updateActivity(button.dataset.statusId, { status: button.dataset.status });
-      state.lastMessage = "Check-in saved.";
-      persist();
-      render();
+      announce("Check-in saved.");
     });
   });
 
@@ -735,6 +953,8 @@ function bindEvents() {
   if (noteForm) noteForm.addEventListener("submit", submitProjectNote);
   const branchForm = document.querySelector("[data-form='branch']");
   if (branchForm) branchForm.addEventListener("submit", submitBranch);
+  const questionnaireForm = document.querySelector("[data-form='questionnaire']");
+  if (questionnaireForm) questionnaireForm.addEventListener("submit", submitQuestionnaire);
 
   document.querySelectorAll("[data-branch-action]").forEach((button) => {
     button.addEventListener("click", () => handleBranchAction(button.dataset.branchAction, button.dataset.branchId));
@@ -759,14 +979,37 @@ async function handleAction(action) {
     saveFirebaseConfig();
     return;
   }
+  if (action === "edit-profile") {
+    state.questionnaireReturn = null;
+    state.activeModal = "questionnaire";
+    render();
+    return;
+  }
   if (action === "save-gemini") {
-    localStorage.setItem(geminiKey, document.querySelector("[data-secret='gemini']").value.trim());
+    const token = document.querySelector("[data-secret='gemini']").value.trim();
+    if (!token) {
+      toast("Paste a Gemini API key first, or use Clear token.");
+      return;
+    }
+    localStorage.setItem(geminiKey, token);
+    if (needsQuestionnaire()) {
+      state.questionnaireReturn = null;
+      state.activeModal = "questionnaire";
+      toast("Token saved. Answer these once so Gemini can plan around your energy.");
+      render();
+      return;
+    }
     toast("Gemini token saved locally.");
     return;
   }
-  if (action === "clear-gemini") {
+  if (action === "clear-gemini" || action === "disconnect-gemini") {
     localStorage.removeItem(geminiKey);
+    state.settings.parserMode = "manual";
+    if (state.activeModal === "questionnaire") state.activeModal = null;
+    state.questionnaireReturn = null;
+    persist();
     render();
+    toast("Gemini disconnected. No-LLM chat still works offline.");
     return;
   }
   if (action === "google-signin") {
@@ -794,9 +1037,8 @@ async function handleAction(action) {
     state.activities = state.activities.filter((activity) => activity.id !== state.editingId);
     state.activeModal = null;
     state.editingId = null;
-    state.lastMessage = "Activity deleted.";
-    persist();
-    render();
+    announce("Activity deleted.");
+    return;
   }
   if (action === "task-note-subtask") {
     createSubtaskFromEditingNote();
@@ -812,74 +1054,209 @@ async function handleAction(action) {
   }
   if (action === "note-to-task") {
     createTaskFromLatestProjectNote();
+    return;
   }
+  if (action === "confirm-parse") {
+    confirmPendingParse();
+    return;
+  }
+  if (action === "discard-parse") {
+    state.pendingParse = null;
+    state.activeModal = "chat";
+    render();
+    toast("Discarded. Your chat text is still there.");
+  }
+}
+
+function confirmPendingParse() {
+  const pending = state.pendingParse;
+  if (!pending) return;
+  const picked = { activities: [], notes: [] };
+  document.querySelectorAll("[data-confirm-activity]").forEach((box) => {
+    if (box.checked && pending.activities[Number(box.dataset.confirmActivity)]) {
+      picked.activities.push(pending.activities[Number(box.dataset.confirmActivity)]);
+    }
+  });
+  document.querySelectorAll("[data-confirm-note]").forEach((box) => {
+    if (box.checked && pending.notes[Number(box.dataset.confirmNote)]) {
+      picked.notes.push(pending.notes[Number(box.dataset.confirmNote)]);
+    }
+  });
+  state.pendingParse = null;
+  if (!picked.activities.length && !picked.notes.length) {
+    state.activeModal = "chat";
+    render();
+    toast("Nothing selected, nothing added.");
+    return;
+  }
+  state.chatDraft = "";
+  applyParsed(picked, "");
+}
+
+function applyParsed(parsed, suffix) {
+  state.activities = [...state.activities, ...parsed.activities];
+  state.projectNotes = [...state.projectNotes, ...parsed.notes];
+  ensureBranchesForActivities(parsed.activities);
+  ensureBranchesForNotes(parsed.notes);
+  state.activeModal = null;
+  const summary = `${parsed.activities.length} task${parsed.activities.length === 1 ? "" : "s"} and ${parsed.notes.length} note${parsed.notes.length === 1 ? "" : "s"} added from chat.`;
+  announce(suffix ? `${summary} ${suffix}` : summary);
+}
+
+function submitQuestionnaire(event) {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const profile = sanitizeProfile({
+    workStart: form.get("workStart"),
+    workEnd: form.get("workEnd"),
+    peakStart: form.get("peakStart"),
+    peakEnd: form.get("peakEnd"),
+    maxFocusMin: form.get("maxFocusMin"),
+    breakMin: form.get("breakMin"),
+    drainingTasks: String(form.get("drainingTasks") || "").trim(),
+    energizingTasks: String(form.get("energizingTasks") || "").trim()
+  });
+  if (!profile.workStart || !profile.workEnd || !profile.peakStart || !profile.peakEnd || !profile.drainingTasks || !profile.energizingTasks) {
+    toast("Please answer every question - the planner needs all of them.");
+    return;
+  }
+  if (timeToMinutes(profile.workEnd) <= timeToMinutes(profile.workStart)) {
+    toast("Work end must be after work start.");
+    return;
+  }
+  if (timeToMinutes(profile.peakEnd) <= timeToMinutes(profile.peakStart)) {
+    toast("Peak window end must be after its start.");
+    return;
+  }
+  state.profile = profile;
+  state.activeModal = state.questionnaireReturn === "chat" ? "chat" : null;
+  state.questionnaireReturn = null;
+  announce("Planning profile saved. Gemini and the offline parser will use it.");
 }
 
 async function submitChat() {
   const input = document.querySelector("[data-chat-input]");
+  if (!input) return;
   const text = input.value.trim();
-  if (!text) return;
+  if (!text) {
+    toast("Type something to add first.");
+    return;
+  }
   const mode = state.settings.parserMode;
   const token = localStorage.getItem(geminiKey);
   if (mode === "gemini" && !token) {
     toast("Add a Gemini token first.");
     return;
   }
-  let parsed = { activities: [], notes: [] };
-  if (mode === "gemini") {
-    parsed = await parseWithGemini(text, token).catch(() => parseNoLlm(text));
-  } else {
-    parsed = parseNoLlm(text);
+  if (mode === "gemini" && needsQuestionnaire()) {
+    state.chatDraft = text;
+    state.questionnaireReturn = "chat";
+    state.activeModal = "questionnaire";
+    render();
+    toast("Answer these once so Gemini can plan around your energy.");
+    return;
   }
-  state.activities = [...state.activities, ...parsed.activities];
-  state.projectNotes = [...state.projectNotes, ...parsed.notes];
-  ensureBranchesForActivities(parsed.activities);
-  ensureBranchesForNotes(parsed.notes);
-  state.activeModal = null;
-  state.lastMessage = `${parsed.activities.length} task${parsed.activities.length === 1 ? "" : "s"} and ${parsed.notes.length} note${parsed.notes.length === 1 ? "" : "s"} added from chat.`;
-  persist();
+  const button = document.querySelector("[data-action='submit-chat']");
+  if (button) {
+    if (button.disabled) return;
+    button.disabled = true;
+    button.textContent = "Parsing...";
+  }
+  const resetButton = () => {
+    if (button) {
+      button.disabled = false;
+      button.textContent = state.chatClarify ? "Answer & plan" : "Add from chat";
+    }
+  };
+  if (mode !== "gemini") {
+    const parsed = parseNoLlm(text);
+    if (!parsed.activities.length && !parsed.notes.length) {
+      resetButton();
+      toast("Could not find any task or note in that text.");
+      return;
+    }
+    state.chatDraft = "";
+    applyParsed(parsed, parsed.warning || "");
+    return;
+  }
+  const clarify = state.chatClarify;
+  const requestText = clarify
+    ? `${clarify.originalText}\n\nYou asked: ${clarify.question}\nMy answer: ${text}`
+    : text;
+  let parsed;
+  let fellBack = false;
+  try {
+    parsed = await parseWithGemini(requestText, token, { allowQuestion: !clarify });
+  } catch (error) {
+    console.warn("Gemini parse failed", error);
+    parsed = parseNoLlm(clarify ? clarify.originalText : text);
+    fellBack = true;
+  }
+  if (!fellBack && parsed.question && !clarify) {
+    state.chatClarify = { question: parsed.question, originalText: text };
+    state.chatDraft = "";
+    render();
+    toast("Gemini needs one detail before planning.");
+    return;
+  }
+  state.chatClarify = null;
+  if (!parsed.activities.length && !parsed.notes.length) {
+    resetButton();
+    toast(fellBack ? "Gemini failed and the offline parser found nothing either." : "Gemini could not find any task or note in that text.");
+    return;
+  }
+  if (fellBack) {
+    state.chatDraft = "";
+    applyParsed(parsed, "(Gemini failed, used the offline parser.)");
+    return;
+  }
+  state.pendingParse = { activities: parsed.activities, notes: parsed.notes };
+  state.activeModal = "confirm-parse";
   render();
 }
 
 function submitTaskForm(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const activity = {
+  const editing = getEditingActivity();
+  const activity = sanitizeActivity({
     id: state.editingId || makeId(),
-    title: form.get("title").trim(),
-    project: normalizeProject(form.get("project")),
-    branch: normalizeBranch(form.get("branch")),
+    title: String(form.get("title") || ""),
+    project: form.get("project"),
+    branch: form.get("branch"),
     date: form.get("date") || todayKey(),
     start: form.get("start") || "09:00",
-    durationMin: Number(form.get("durationMin") || 30),
-    kind: form.get("kind") || "focus",
+    durationMin: form.get("durationMin") || 30,
+    kind: form.get("kind"),
     recurrence: parseRecurrence(form.get("recurrence")),
-    note: form.get("note").trim(),
-    status: (getEditingActivity() && getEditingActivity().status) || "planned"
-  };
+    note: String(form.get("note") || "").trim(),
+    status: (editing && editing.status) || "planned"
+  });
+  if (!activity) {
+    toast("Give the task a title first.");
+    return;
+  }
   ensureBranch(activity.project, activity.branch);
-  if (state.editingId) {
+  const wasEditing = Boolean(state.editingId);
+  if (wasEditing) {
     state.activities = state.activities.map((item) => item.id === state.editingId ? activity : item);
-    state.lastMessage = "Activity updated.";
   } else {
     state.activities.push(activity);
-    state.lastMessage = "Activity added.";
   }
   state.activeModal = null;
   state.editingId = null;
-  persist();
-  render();
+  announce(wasEditing ? "Activity updated." : "Activity added.");
 }
 
 function parseNoLlm(text) {
-  const lines = text.split(/\n|;/).map((line) => line.replace(/^[-*\d.)\s]+/, "").trim()).filter(Boolean);
+  const lines = text.split(/\n|;/).map((line) => line.replace(/^[-*\d.)\s]+(?=[a-zA-Z#])/, "").trim()).filter(Boolean);
   const parsed = { activities: [], notes: [] };
   lines.forEach((line) => {
     const lower = line.toLowerCase();
     const project = projectFromText(lower);
     const branch = branchFromText(lower);
     if (isNoteLine(lower)) {
-      parsed.notes.push({
+      const note = sanitizeNote({
         id: makeId(),
         project,
         branch,
@@ -888,34 +1265,164 @@ function parseNoLlm(text) {
         priority: inferNotePriority(lower),
         createdAt: new Date().toISOString()
       });
+      if (!note) return;
+      parsed.notes.push(note);
       ensureBranch(project, branch);
       return;
     }
-    const duration = lower.match(/(\d+)\s?(m|min|minutes|h|hr|hours)/);
-    const time = lower.match(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/);
+    const date = parseDateFromText(lower);
+    const slotRequest = parseSlotRequest(lower);
+    if (slotRequest) {
+      const slots = generateFocusSlots(slotRequest.count, date || todayKey(), parseDurationFromText(lower), project);
+      parsed.activities.push(...slots);
+      if (slots.length) ensureBranch(project, "Main");
+      if (slots.length < slotRequest.count) {
+        parsed.warning = `(Only ${slots.length} of ${slotRequest.count} slots fit in your day window.)`;
+      }
+      return;
+    }
     const recurrence = parseRecurrence(lower);
-    const durationMin = duration ? Number(duration[1]) * (duration[2].startsWith("h") ? 60 : 1) : 30;
-    const date = lower.includes("tomorrow") ? addDays(todayKey(), 1) : recurrence ? nextDateForRecurrence(recurrence) : todayKey();
-    parsed.activities.push({
+    const durationMin = parseDurationFromText(lower) || 30;
+    const activity = sanitizeActivity({
       id: makeId(),
       title: cleanTaskTitle(line),
       project,
       branch,
-      date,
-      start: time ? normalizeTime(time) : nextOpenTime(),
+      date: date || (recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+      start: parseTimeFromText(lower) || nextOpenTime(),
       durationMin,
       kind: inferKind(lower),
       recurrence,
       note: "",
       status: "planned"
     });
+    if (!activity) return;
+    parsed.activities.push(activity);
     ensureBranch(project, branch);
   });
   return parsed;
 }
 
-async function parseWithGemini(text, token) {
-  const prompt = `Return only JSON with shape {"activities":[],"notes":[]}. Do not wrap in markdown.
+const wordNumbers = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+
+function wordToCount(value) {
+  const number = Number(value);
+  if (Number.isFinite(number)) return clampNumber(number, 1, 12, 1);
+  return clampNumber(wordNumbers[String(value).toLowerCase()] || 1, 1, 12, 1);
+}
+
+function parseSlotRequest(lower) {
+  const match = lower.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b(?:\s+\S+){0,3}?\s+(slots?|blocks?|sessions?)\b/);
+  if (match) return { count: wordToCount(match[1]) };
+  if (/\b(productive|focus|deep work|deep-work)\s+(slots?|blocks?|sessions?)\b/.test(lower)) return { count: 1 };
+  return null;
+}
+
+function parseDateFromText(lower) {
+  if (/\bday after tomorrow\b/.test(lower)) return addDays(todayKey(), 2);
+  if (/\btomorrow\b/.test(lower)) return addDays(todayKey(), 1);
+  if (/\btoday\b|\btonight\b/.test(lower)) return todayKey();
+  const nextWeekday = lower.match(/\bnext\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (nextWeekday) return dateForWeekday(nextWeekday[1], true);
+  const plainWeekday = lower.match(/\b(?:on\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/);
+  if (plainWeekday && !/\b(every|each)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/.test(lower)) {
+    return dateForWeekday(plainWeekday[1], false);
+  }
+  if (/\bnext week\b/.test(lower)) return addDays(todayKey(), 7);
+  const iso = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  if (iso) return sanitizeDateKey(iso[1], null);
+  return null;
+}
+
+function dateForWeekday(name, forceNextWeek) {
+  const target = weekdayIndex(weekdayCode(name));
+  const now = new Date(`${todayKey()}T00:00:00`);
+  let offset = (target - now.getDay() + 7) % 7;
+  if (forceNextWeek) offset += offset === 0 ? 7 : (offset < 7 ? 7 : 0);
+  return addDays(todayKey(), offset);
+}
+
+function parseDurationFromText(lower) {
+  const explicit = lower.match(/(\d+(?:\.\d+)?)\s?(m\b|min|minutes|h\b|hr|hours)/);
+  if (explicit) return clampNumber(Number(explicit[1]) * (explicit[2].startsWith("h") ? 60 : 1), 5, 600, 30);
+  if (/\bhalf\s+(an\s+)?hour\b/.test(lower)) return 30;
+  if (/\bquarter\s+(of\s+an\s+)?hour\b/.test(lower)) return 15;
+  if (/\b(an\s+)?hour\s+and\s+a\s+half\b/.test(lower)) return 90;
+  if (/\ban\s+hour\b|\bone\s+hour\b/.test(lower)) return 60;
+  const wordHours = lower.match(/\b(one|two|three|four|five|six)\s+hours?\b/);
+  if (wordHours) return clampNumber(wordNumbers[wordHours[1]] * 60, 5, 600, 60);
+  return null;
+}
+
+function generateFocusSlots(count, date, requestedDuration, project) {
+  const profile = state.profile || {};
+  const focusMin = clampNumber(requestedDuration || Math.min(profile.maxFocusMin || 90, 90), 15, 240, 90);
+  const gap = clampNumber(profile.breakMin, 5, 60, 15);
+  const peakStart = sanitizeTime(profile.peakStart, "") || sanitizeTime(profile.workStart, "") || "09:00";
+  const dayEnd = sanitizeTime(profile.workEnd, "") || "18:00";
+  const busy = state.activities
+    .filter((activity) => activity.date === date)
+    .map((activity) => [timeToMinutes(activity.start), timeToMinutes(activity.start) + clampNumber(activity.durationMin, 5, 600, 30)]);
+  const slots = [];
+  let cursor = timeToMinutes(peakStart);
+  const hardStop = Math.min(Math.max(timeToMinutes(dayEnd), cursor + focusMin), 23 * 60 + 59);
+  let guard = 0;
+  while (slots.length < count && cursor + focusMin <= hardStop && guard < 100) {
+    guard += 1;
+    const conflict = busy.find(([start, end]) => cursor < end && cursor + focusMin > start);
+    if (conflict) {
+      cursor = conflict[1] + gap;
+      continue;
+    }
+    slots.push(minutesToTime(cursor));
+    cursor += focusMin + gap;
+  }
+  return slots.map((start, index) => sanitizeActivity({
+    id: makeId(),
+    title: count === 1 ? "Deep focus slot" : `Deep focus slot ${index + 1}`,
+    project: project || state.selectedProject || "Inbox",
+    branch: "Main",
+    date,
+    start,
+    durationMin: focusMin,
+    kind: "focus",
+    note: "Protected productive slot. Keep draining work out of it.",
+    status: "planned"
+  })).filter(Boolean);
+}
+
+function minutesToTime(total) {
+  const wrapped = ((Math.round(total) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
+}
+
+function profilePromptBlock() {
+  const profile = state.profile;
+  if (!profileComplete()) return "";
+  const busy = sortedActivities()
+    .filter((activity) => activity.date >= todayKey())
+    .slice(0, 30)
+    .map((activity) => `${activity.date} ${activity.start} ${activity.durationMin}m ${activity.title}`)
+    .join("; ") || "nothing scheduled yet";
+  return `
+About this user (use it - this is why they trust you):
+- Work hours: ${profile.workStart}-${profile.workEnd}.
+- Peak focus window (most productive, least drained): ${profile.peakStart}-${profile.peakEnd}.
+- Max deep-focus block: ${profile.maxFocusMin} minutes. Needs ${profile.breakMin} minute breaks between focus blocks.
+- Tasks that DRAIN them: ${profile.drainingTasks}.
+- Tasks they can do tired / that energize them: ${profile.energizingTasks}.
+- Already scheduled (avoid overlaps): ${busy}.
+
+Scheduling rules:
+- "Productive slots" / focus blocks go inside the peak window when possible, otherwise within work hours. Never overlap existing items, keep ${profile.breakMin} min gaps, cap each block at ${profile.maxFocusMin} minutes.
+- If the user asks for N slots or blocks, return exactly N activities with kind "focus" and generic titles like "Deep focus slot 1" unless they named the work.
+- Never stack draining tasks back to back; alternate with lighter or energizing work, and keep draining tasks out of the late-day low-energy zone.
+`;
+}
+
+async function parseWithGemini(text, token, options = {}) {
+  const allowQuestion = options.allowQuestion !== false;
+  const prompt = `You are a scheduling parser and planner. Return only JSON with shape {"activities":[],"notes":[],"question":""}. Do not wrap in markdown.
 
 For each activity:
 - title: a short clean task title only. Do NOT copy the whole user prompt. Remove words like "add", "schedule", "every Wednesday", dates, times, duration, and filler. Example input "every Wednesday 9am do lab journal 30m" -> title "Lab journal".
@@ -929,50 +1436,72 @@ For each activity:
 
 For notes:
 - project, branch, section one of pinned_context/open_decisions/future_ideas/blocked_by/meeting_notes/task_seeds/someday_not_now, text, priority 1-5.
+${profilePromptBlock()}
+${allowQuestion
+    ? `If the request is genuinely too ambiguous to schedule, set "question" to ONE short clarifying question and return empty activities and notes. Only do this when you truly cannot proceed - prefer reasonable assumptions.`
+    : `Do NOT ask any question. Make reasonable assumptions and return your best JSON plan.`}
+
+Today is ${todayKey()}.
 
 Text:
 ${text}`;
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${encodeURIComponent(token)}`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(token)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { responseMimeType: "application/json" }
+    })
   });
-  if (!response.ok) throw new Error("Gemini request failed");
+  if (!response.ok) throw new Error(`Gemini request failed (HTTP ${response.status})`);
   const data = await response.json();
-  const raw = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0].text;
-  const json = raw.replace(/```json|```/g, "").trim();
-  const parsed = JSON.parse(json);
-  const activities = Array.isArray(parsed) ? parsed : (parsed.activities || []);
+  const raw = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+  if (!raw) throw new Error("Gemini returned no text");
+  const parsed = JSON.parse(extractJsonBlock(raw));
+  const activities = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.activities) ? parsed.activities : []);
+  const notes = Array.isArray(parsed) ? [] : (Array.isArray(parsed.notes) ? parsed.notes : []);
+  const question = !Array.isArray(parsed) && typeof parsed.question === "string" ? parsed.question.trim().slice(0, 300) : "";
   return {
-    activities: activities.map((item) => normalizeParsedActivity(item, text)),
-    notes: (Array.isArray(parsed) ? [] : (parsed.notes || [])).map((note) => ({
+    activities: activities.map((item) => normalizeParsedActivity(item, text)).filter(Boolean),
+    notes: notes.map((note) => sanitizeNote({
       id: makeId(),
-      project: normalizeProject(note.project),
-      branch: normalizeBranch(note.branch),
-      section: noteSections().includes(note.section) ? note.section : "task_seeds",
-      text: note.text || "",
-      priority: Number(note.priority || 3),
+      project: normalizeProject(note && note.project),
+      branch: normalizeBranch(note && note.branch),
+      section: note && note.section,
+      text: note && note.text,
+      priority: note && note.priority,
       createdAt: new Date().toISOString()
-    }))
+    })).filter(Boolean),
+    question
   };
 }
 
+function extractJsonBlock(raw) {
+  const cleaned = String(raw).replace(/```json|```/gi, "").trim();
+  if (cleaned.startsWith("{") || cleaned.startsWith("[")) return cleaned;
+  const start = cleaned.search(/[{[]/);
+  if (start === -1) return cleaned;
+  const end = Math.max(cleaned.lastIndexOf("}"), cleaned.lastIndexOf("]"));
+  return end > start ? cleaned.slice(start, end + 1) : cleaned.slice(start);
+}
+
 function normalizeParsedActivity(item, originalText) {
+  if (!item || typeof item !== "object") return null;
   const recurrence = normalizeRecurrence(item.recurrence) || parseRecurrence(`${item.sourceText || ""} ${item.title || ""} ${originalText || ""}`);
   const sourceText = item.sourceText || originalText || item.title || "";
-  return {
+  return sanitizeActivity({
     id: makeId(),
     title: cleanTaskTitle(item.title || sourceText),
     project: normalizeProject(item.project || projectFromText(sourceText.toLowerCase())),
     branch: normalizeBranch(item.branch || branchFromText(sourceText.toLowerCase())),
-    date: item.date || (recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
-    start: item.start || nextOpenTime(),
-    durationMin: Number(item.durationMin || 30),
+    date: sanitizeDateKey(item.date, recurrence ? nextDateForRecurrence(recurrence) : todayKey()),
+    start: sanitizeTime(item.start, nextOpenTime()),
+    durationMin: item.durationMin,
     kind: item.kind || (recurrence ? "routine" : "focus"),
     recurrence,
     note: "",
     status: "planned"
-  };
+  });
 }
 
 function saveFirebaseConfig() {
@@ -984,14 +1513,49 @@ function saveFirebaseConfig() {
     render();
     return;
   }
-  try {
-    JSON.parse(value);
-    localStorage.setItem(firebaseKey, value);
-    toast("Firebase config saved.");
-    boot();
-  } catch {
-    toast("Firebase config must be valid JSON.");
+  const parsed = parseFirebaseConfigText(value);
+  if (!parsed) {
+    toast("Could not read that config. Paste the {...} object Firebase shows for your web app.");
+    return;
   }
+  const missing = ["apiKey", "projectId", "appId"].filter((field) => !parsed[field]);
+  if (missing.length) {
+    toast(`Config is missing ${missing.join(", ")}. Copy the full firebaseConfig object.`);
+    return;
+  }
+  localStorage.setItem(firebaseKey, JSON.stringify(parsed));
+  toast("Firebase config saved.");
+  boot();
+}
+
+function parseFirebaseConfigText(text) {
+  let candidate = text
+    .replace(/^\s*(?:const|var|let)\s+firebaseConfig\s*=\s*/i, "")
+    .replace(/;\s*$/, "")
+    .trim();
+  const firstBrace = candidate.indexOf("{");
+  const lastBrace = candidate.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    candidate = candidate.slice(firstBrace, lastBrace + 1);
+  }
+  try {
+    return asPlainObject(JSON.parse(candidate));
+  } catch {
+    // Firebase console shows a JS object literal, not JSON: quote bare keys and swap quote style.
+    const jsonish = candidate
+      .replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
+      .replace(/'/g, '"')
+      .replace(/,\s*}/g, "}");
+    try {
+      return asPlainObject(JSON.parse(jsonish));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function asPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
 function readFirebaseConfig() {
@@ -1013,24 +1577,25 @@ function submitProjectNote(event) {
     id: makeId(),
     project: state.selectedProject || "Inbox",
     branch: "Main",
-    section,
-    text,
+    section: noteSections().includes(section) ? section : inferNoteSection(text.toLowerCase()),
+    text: text.slice(0, 2000),
     priority: inferNotePriority(text.toLowerCase()),
     createdAt: new Date().toISOString()
   });
-  state.lastMessage = "Project note saved.";
-  persist();
-  render();
+  announce("Project note saved.");
 }
 
 function submitBranch(event) {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
-  const name = normalizeBranch(form.get("name"));
+  const raw = String(form.get("name") || "").trim();
+  if (!raw) {
+    toast("Give the branch a name first.");
+    return;
+  }
+  const name = normalizeBranch(raw);
   ensureBranch(state.selectedProject || "Inbox", name);
-  state.lastMessage = `${name} branch added.`;
-  persist();
-  render();
+  announce(`${name} branch added.`);
 }
 
 function handleBranchAction(action, id) {
@@ -1075,16 +1640,25 @@ function handleBranchAction(action, id) {
     });
     state.lastMessage = `Next action created for ${branch.name}.`;
   }
-  persist();
-  render();
+  announce(state.lastMessage);
+}
+
+function editingNoteText(activity) {
+  const field = document.querySelector("[data-form='task'] [name='note']");
+  const live = field ? field.value.trim() : "";
+  return live || String((activity && activity.note) || "").trim();
 }
 
 function createSubtaskFromEditingNote() {
   const activity = getEditingActivity();
-  if (!activity || !activity.note) return;
+  const noteText = editingNoteText(activity);
+  if (!activity || !noteText) {
+    toast("Write a task note first.");
+    return;
+  }
   state.activities.push({
     id: makeId(),
-    title: firstUsefulLine(activity.note, `Follow up: ${activity.title}`),
+    title: firstUsefulLine(noteText, `Follow up: ${activity.title}`),
     project: activity.project || "Inbox",
     branch: activity.branch || "Main",
     date: activity.date || todayKey(),
@@ -1094,39 +1668,43 @@ function createSubtaskFromEditingNote() {
     note: `From note on ${activity.title}`,
     status: "planned"
   });
-  state.lastMessage = "Subtask created from note.";
   state.activeModal = null;
   state.editingId = null;
-  persist();
-  render();
+  announce("Subtask created from note.");
 }
 
 function saveEditingNoteToProject() {
   const activity = getEditingActivity();
-  if (!activity || !activity.note) return;
+  const noteText = editingNoteText(activity);
+  if (!activity || !noteText) {
+    toast("Write a task note first.");
+    return;
+  }
   state.projectNotes.unshift({
     id: makeId(),
     project: activity.project || "Inbox",
     branch: activity.branch || "Main",
-    section: inferNoteSection(activity.note.toLowerCase()),
-    text: activity.note,
-    priority: inferNotePriority(activity.note.toLowerCase()),
+    section: inferNoteSection(noteText.toLowerCase()),
+    text: noteText.slice(0, 2000),
+    priority: inferNotePriority(noteText.toLowerCase()),
     linkedActivityId: activity.id,
     createdAt: new Date().toISOString()
   });
   state.selectedProject = activity.project || "Inbox";
-  state.lastMessage = "Task note saved to project board.";
   state.activeModal = null;
   state.editingId = null;
-  persist();
-  render();
+  announce("Task note saved to project board.");
 }
 
 function applyEditingNoteSignals() {
   const activity = getEditingActivity();
-  if (!activity || !activity.note) return;
-  const note = activity.note.toLowerCase();
-  const changes = {};
+  const noteText = editingNoteText(activity);
+  if (!activity || !noteText) {
+    toast("Write a task note first.");
+    return;
+  }
+  const note = noteText.toLowerCase();
+  const changes = { note: noteText };
   if (/fresh brain|quiet brain|deep|morning/.test(note)) {
     changes.start = "09:00";
     changes.kind = "focus";
@@ -1143,11 +1721,9 @@ function applyEditingNoteSignals() {
     changes.start = "09:00";
   }
   updateActivity(activity.id, changes);
-  state.lastMessage = Object.keys(changes).length ? "Note signals applied to the schedule." : "No strong scheduling signal found in note.";
   state.activeModal = null;
   state.editingId = null;
-  persist();
-  render();
+  announce(Object.keys(changes).length > 1 ? "Note signals applied to the schedule." : "Note saved, but no strong scheduling signal found in it.");
 }
 
 function createTaskFromLatestProjectNote() {
@@ -1169,9 +1745,7 @@ function createTaskFromLatestProjectNote() {
     note: note.text,
     status: "planned"
   });
-  state.lastMessage = "Task created from latest project note.";
-  persist();
-  render();
+  announce("Task created from latest project note.");
 }
 
 function emptyActivity() {
@@ -1358,24 +1932,45 @@ function addDays(key, amount) {
 }
 
 function nextOpenTime() {
-  if (!state.activities.length) return "09:00";
-  const last = sortedActivities()[state.activities.length - 1];
+  const todays = sortedActivities().filter((activity) => activity.date === todayKey());
+  if (!todays.length) return state.profile && sanitizeTime(state.profile.workStart, "") || "09:00";
+  const last = todays[todays.length - 1];
   return addMinutes(last.start, last.durationMin || 30);
 }
 
 function addMinutes(time, minutes) {
-  const parts = time.split(":").map(Number);
-  const total = parts[0] * 60 + parts[1] + minutes;
+  const clean = sanitizeTime(time, "09:00");
+  const parts = clean.split(":").map(Number);
+  const total = parts[0] * 60 + parts[1] + (Number.isFinite(Number(minutes)) ? Number(minutes) : 30);
   return `${String(Math.floor(total / 60) % 24).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function normalizeTime(match) {
-  let hour = Number(match[1]);
-  const minute = match[2] || "00";
-  const suffix = match[3];
+function timeToMinutes(time) {
+  const clean = sanitizeTime(time, "09:00");
+  const parts = clean.split(":").map(Number);
+  return parts[0] * 60 + parts[1];
+}
+
+function parseTimeFromText(lower) {
+  const withMinutes = lower.match(/\b([01]?\d|2[0-3]):([0-5]\d)\s*(am|pm)?\b/);
+  if (withMinutes) return composeTime(withMinutes[1], withMinutes[2], withMinutes[3]);
+  const hourOnly = lower.match(/\b([1-9]|1[0-2])\s*(am|pm)\b/);
+  if (hourOnly) return composeTime(hourOnly[1], "00", hourOnly[2]);
+  const atHour = lower.match(/\bat\s+([01]?\d|2[0-3])\b/);
+  if (atHour) return composeTime(atHour[1], "00", null);
+  if (/\bnoon\b|\bmidday\b/.test(lower)) return "12:00";
+  if (/\bmorning\b/.test(lower)) return sanitizeTime(state.profile && state.profile.peakStart, "") || "09:00";
+  if (/\bafternoon\b/.test(lower)) return "14:00";
+  if (/\bevening\b/.test(lower)) return "18:00";
+  if (/\btonight\b/.test(lower)) return "20:00";
+  return null;
+}
+
+function composeTime(hourText, minuteText, suffix) {
+  let hour = Number(hourText);
   if (suffix === "pm" && hour < 12) hour += 12;
   if (suffix === "am" && hour === 12) hour = 0;
-  return `${String(hour).padStart(2, "0")}:${minute}`;
+  return `${String(hour).padStart(2, "0")}:${minuteText}`;
 }
 
 function inferKind(lower) {
@@ -1450,10 +2045,14 @@ function weekdayIndex(code) {
 
 function cleanTitle(line) {
   return line
-    .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly)\b/gi, "")
-    .replace(/\b(every|each|on)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
-    .replace(/\b\d+\s?(m|min|minutes|h|hr|hours)\b/gi, "")
-    .replace(/\b([01]?\d|2[0-3])(?::([0-5]\d))?\s?(am|pm)?\b/gi, "")
+    .replace(/\b(today|tomorrow|tonight|daily|every day|weekly|monthly|next week)\b/gi, "")
+    .replace(/\b(every|each|on|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?\b/gi, "")
+    .replace(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi, "")
+    .replace(/\b\d+(?:\.\d+)?\s?(m|min|minutes|h|hr|hours)\b/gi, "")
+    .replace(/\b([01]?\d|2[0-3]):[0-5]\d\s*(am|pm)?\b/gi, "")
+    .replace(/\b\d{1,2}\s*(am|pm)\b/gi, "")
+    .replace(/\bat\s+\d{1,2}\b/gi, "")
+    .replace(/#\w+(?::[\w-]+)?/g, "")
     .replace(/\s+/g, " ")
     .trim() || "Untitled";
 }
@@ -1480,7 +2079,9 @@ function formatDate(key) {
 }
 
 function formatTime(time) {
-  const parts = time.split(":").map(Number);
+  const clean = sanitizeTime(time, "");
+  if (!clean) return "--:--";
+  const parts = clean.split(":").map(Number);
   const suffix = parts[0] >= 12 ? "PM" : "AM";
   const hour = parts[0] % 12 || 12;
   return `${hour}:${String(parts[1]).padStart(2, "0")} ${suffix}`;

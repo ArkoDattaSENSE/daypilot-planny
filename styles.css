@@ -9,7 +9,7 @@
   --green: #15803d;
   --amber: #b45309;
   --red: #dc2626;
-  --shadow: 0 18px 50px rgba(15, 23, 42, 0.1);
+  --shadow: 0 8px 28px rgba(15, 23, 42, 0.07);
   color-scheme: light;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -32,17 +32,27 @@ select {
 }
 
 button {
-  min-height: 44px;
+  min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 0 16px;
   color: #334155;
   background: #fff;
-  font-weight: 750;
+  font-weight: 650;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-button:hover,
+button:hover {
+  background: #f1f5f9;
+  border-color: #c3d0e2;
+}
+
+button.primary:hover,
+button.active:hover {
+  background: var(--accent-strong);
+}
+
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
@@ -57,9 +67,22 @@ select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 12px 14px;
+  padding: 11px 14px;
   color: var(--ink);
-  background: #f8fafc;
+  background: #fbfdff;
+}
+
+input[type="range"] {
+  min-height: 30px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  accent-color: var(--accent);
+}
+
+input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
 }
 
 textarea {
@@ -70,9 +93,16 @@ textarea {
 
 label {
   display: grid;
-  gap: 8px;
-  color: #334155;
-  font-weight: 750;
+  gap: 6px;
+  color: #475569;
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+label input,
+label textarea,
+label select {
+  font-size: 15px;
 }
 
 .app-shell {
@@ -93,20 +123,33 @@ label {
   margin-bottom: 18px;
 }
 
-.topbar h1,
-.page-head h2,
+.topbar h1 {
+  margin: 0;
+  font-size: clamp(26px, 4vw, 34px);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  font-weight: 800;
+}
+
+.page-head h2 {
+  margin: 0;
+  font-size: clamp(22px, 3vw, 28px);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
 .empty-state h2 {
   margin: 0;
-  font-size: clamp(30px, 5vw, 44px);
-  line-height: 1.05;
-  letter-spacing: 0;
+  font-size: 18px;
+  line-height: 1.3;
 }
 
 .topbar p,
 .page-head p,
 .muted {
-  margin: 6px 0 0;
+  margin: 4px 0 0;
   color: var(--muted);
+  font-size: 14.5px;
   line-height: 1.5;
 }
 
@@ -121,10 +164,37 @@ label {
   align-items: center;
 }
 
+.topnav,
+.segmented {
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: #e7edf6;
+}
+
 .topnav button,
-.segmented button,
+.segmented button {
+  min-height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: #47566b;
+}
+
+.topnav button:hover,
+.segmented button:hover {
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.topnav button.active,
+.segmented button.active {
+  color: #fff;
+  background: var(--accent);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.35);
+}
+
 .status-buttons button {
-  min-height: 40px;
+  min-height: 38px;
 }
 
 button.active,
@@ -159,10 +229,20 @@ button.active,
 
 .mood-panel {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 180px 1fr 1fr;
-  gap: 16px;
-  align-items: end;
-  padding: 18px;
+  grid-template-columns: minmax(200px, 1fr) 170px 1fr 1fr;
+  gap: 18px;
+  align-items: center;
+  padding: 16px 20px;
+}
+
+.mood-panel h2 {
+  font-size: 16px;
+}
+
+.mood-panel p {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
 }
 
 .mood-panel h2,
@@ -181,6 +261,11 @@ button.active,
   color: #334155;
   background: #eef2ff;
   box-shadow: none;
+}
+
+.sync-banner span {
+  color: var(--muted);
+  font-size: 14px;
 }
 
 .sync-banner.warn {
@@ -216,7 +301,19 @@ button.active,
 
 .project-head h2 {
   margin: 0;
-  font-size: 24px;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+}
+
+.project-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13.5px;
+}
+
+.project-panel h3,
+.planner-panel h3 {
+  font-size: 15px;
 }
 
 .project-grid {
@@ -230,6 +327,10 @@ button.active,
   display: grid;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.note-form textarea {
+  min-height: 84px;
 }
 
 .branch-form {
@@ -255,7 +356,19 @@ button.active,
 
 .note-section h4 {
   margin: 0;
-  font-size: 14px;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.board-hint {
+  grid-column: 1 / -1;
+  padding: 18px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  text-align: center;
 }
 
 .note-card {
@@ -312,12 +425,25 @@ button.active,
 
 .empty-state {
   display: grid;
-  place-items: center;
-  min-height: 360px;
+  justify-items: center;
+  align-content: center;
+  gap: 6px;
+  min-height: 230px;
+  padding: 32px 20px;
   border: 1px dashed #cbd5e1;
   border-radius: 14px;
   text-align: center;
   background: #f8fafc;
+}
+
+.empty-state p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.empty-state .button-row {
+  margin-top: 14px;
+  justify-content: center;
 }
 
 .day-list,
@@ -328,14 +454,31 @@ button.active,
 
 .activity-card {
   display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) auto;
+  grid-template-columns: 92px minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
-  min-height: 64px;
+  min-height: 60px;
   width: 100%;
   text-align: left;
-  border-left: 5px solid var(--accent);
+  border-left: 4px solid var(--accent);
   background: #fff;
+}
+
+.activity-card:hover {
+  background: #f8faff;
+  border-color: var(--line);
+  border-left-color: var(--accent);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.07);
+}
+
+.activity-card > span {
+  color: var(--accent-strong);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-card em {
+  font-size: 13px;
 }
 
 .activity-card.admin {
@@ -439,8 +582,9 @@ button.active,
 }
 
 .metric-card strong {
-  font-size: clamp(38px, 7vw, 58px);
+  font-size: clamp(30px, 5vw, 42px);
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .check-row {
@@ -579,6 +723,42 @@ button.active,
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.confirm-list {
+  display: grid;
+  gap: 8px;
+}
+
+.confirm-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f1f5f9;
+  cursor: pointer;
+}
+
+.confirm-item input[type="checkbox"] {
+  margin-top: 4px;
+  accent-color: #2563eb;
+}
+
+.confirm-item span {
+  display: grid;
+  gap: 2px;
+}
+
+.confirm-item em {
+  font-style: normal;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+.modal h3 {
+  margin: 0;
 }
 
 .toast {

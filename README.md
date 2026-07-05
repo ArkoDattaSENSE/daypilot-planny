@@ -7,6 +7,9 @@ A static, minimal scheduling PWA built from the supplied DayPilot design bundle.
 - One main planning screen with Day, Week, and Month views.
 - Mood panel at the top of the planner.
 - Chat modal for no-LLM or Gemini-assisted task dumps.
+- Planning profile questionnaire (work hours, peak focus window, draining vs energizing tasks). Required once when Gemini is connected; synced to Firestore with the rest of the state.
+- Gemini planning uses the profile plus the existing schedule, asks at most one clarifying question when confused, and always shows an "I made this - add it?" confirmation with per-item checkboxes before anything is saved.
+- Offline no-LLM parser understands weekdays ("next friday"), word numbers, natural durations ("half an hour"), times of day ("evening"), recurrence ("every wednesday"), and profile-driven requests like "schedule four productive slots".
 - Manual task modal for add, edit, delete, task notes, and note-driven rescheduling.
 - Compact project notes board with pinned context, decisions, blockers, meeting notes, task seeds, and future ideas.
 - Lightweight project branches with boost, pause, plan-next-week, and next-action controls.
