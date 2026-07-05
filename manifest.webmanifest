@@ -1,0 +1,18 @@
+{
+  "name": "DayPilot",
+  "short_name": "DayPilot",
+  "description": "A chat-first planning assistant for lazy-but-serious work discipline.",
+  "start_url": "./today",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#edf4fb",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

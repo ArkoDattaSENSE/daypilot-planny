@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DayPilot">
+  <rect width="512" height="512" rx="112" fill="#0f172a"/>
+  <path d="M132 154h128c70 0 120 44 120 102s-50 102-120 102H132V154Z" fill="#eef2ff"/>
+  <path d="M188 220h72c25 0 42 15 42 36s-17 36-42 36h-72v-72Z" fill="#7c3aed"/>
+  <path d="M122 384h268" stroke="#93c5fd" stroke-width="32" stroke-linecap="round"/>
+</svg>

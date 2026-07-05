@@ -1,0 +1,21 @@
+{
+  "name": "daypilot-planny",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DayPilot / Planny static PWA for GitHub Pages with Firebase Spark backend.",
+  "scripts": {
+    "build": "node scripts/build-pages.cjs",
+    "start": "python3 -m http.server 8000",
+    "test": "node scripts/smoke-test.cjs",
+    "deploy:github": "gh repo create daypilot-planny --public --source=. --remote=origin --push && gh workflow run deploy-pages.yml",
+    "deploy:firebase": "firebase deploy --only firestore:rules,hosting"
+  },
+  "keywords": [
+    "daypilot",
+    "scheduler",
+    "firebase",
+    "pwa"
+  ],
+  "license": "UNLICENSED"
+}

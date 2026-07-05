@@ -1,0 +1,7 @@
+.planny_git/
+dist/
+node_modules/
+firepit-log.txt
+daypilot_lazy_scheduler_bundle/
+daypilot_lazy_scheduler_bundle_v6.zip
+.firebaserc
